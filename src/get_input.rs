@@ -79,7 +79,12 @@ where
             }
             return Some(Input::Char(ret));
         }
-        let ch = self.src.get_char()?;
+        let Some(ch) = self.src.get_char() else {
+            if let SeqMode::Fill(av) = self.seq {
+                self.seq = SeqMode::Drain(av)
+            }
+            return None;
+        };
         if let SeqMode::Waiting = self.seq
             && ch == 0x1b
         {
@@ -227,6 +232,18 @@ mod tests {
                 Input::Char(b'o'),
                 Input::Arrow(CursorDirection::Left)
             ]
+        );
+    }
+
+    #[test]
+    fn unrecognized_control_sequence() {
+        let i = MockInput::new().chars("\x1b[,").pause();
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(
+            x,
+            vec![Input::Char(b'\x1b'), Input::Char(b'['), Input::Char(b',')]
         );
     }
 }
