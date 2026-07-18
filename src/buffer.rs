@@ -44,8 +44,19 @@ impl Row {
         Self { content, render }
     }
 
+    fn char_idx_to_byte_idx(s: &str, idx: usize) -> usize {
+        s.char_indices()
+            .nth(idx)
+            .map(|x| x.0)
+            .expect("byte index exists")
+    }
+
     pub fn render_len(&self) -> usize {
         self.render.chars().count()
+    }
+
+    pub fn content_len(&self) -> usize {
+        self.content.chars().count()
     }
 
     fn cx_to_rendered(&self, cx: u16) -> u16 {
@@ -54,6 +65,24 @@ impl Row {
             .take(cx.into())
             .map(|ch| Self::rendered_char(ch).len() as u16)
             .sum()
+    }
+
+    fn insert_char(&mut self, ch: char, cur_col: usize) {
+        if cur_col == self.content_len() {
+            self.content.push(ch);
+            for ch in Self::rendered_char(ch) {
+                self.render.push(ch);
+            }
+        } else {
+            let idx = Self::char_idx_to_byte_idx(&self.content, cur_col);
+            self.content.insert(idx, ch);
+
+            let mut idx = Self::char_idx_to_byte_idx(&self.render, cur_col);
+            for ch in Self::rendered_char(ch) {
+                self.render.insert(idx, ch);
+                idx += ch.len_utf8();
+            }
+        }
     }
 }
 
@@ -210,9 +239,7 @@ impl Buffer {
             C::Right => self.cur_col += 1,
         }
 
-        self.cur_col = self
-            .cur_col
-            .clamp(0, self.row_len(self.cur_line).saturating_sub(1));
+        self.cur_col = self.cur_col.clamp(0, self.row_len(self.cur_line));
 
         let cx = (self.cur_col as isize - self.col_off as isize) as i32;
         let cy = (self.cur_line as isize - self.row_off as isize) as i32;
@@ -234,6 +261,14 @@ impl Buffer {
     /// returns (line, col)
     pub fn position(&self) -> (usize, usize) {
         (self.cur_line, self.cur_col)
+    }
+
+    pub fn insert_char(&mut self, ch: char, rows: u16, cols: u16) {
+        let row = &mut self.row[self.cur_line];
+
+        row.insert_char(ch, self.cur_col);
+
+        self.move_cursor(CursorDirection::Right, rows, cols);
     }
 }
 
@@ -307,8 +342,8 @@ mod tests {
                 (C::Down, (1, 0), (1, 0)),
                 (C::Right, (1, 1), (1, 1)),
                 (C::Right, (1, 2), (1, 2)),
-                (C::Right, (1, 2), (1, 2)),
-                (C::Right, (1, 2), (1, 2)),
+                (C::Right, (1, 3), (1, 3)),
+                (C::Right, (1, 3), (1, 3)),
             ],
         );
     }
@@ -359,10 +394,10 @@ mod tests {
         for _ in 0..11 {
             buf.move_cursor(C::Right, rows, cols);
         }
-        assert_eq!(buf.position(), (0, 10));
-        assert_eq!(buf.cursor(), (0, 10));
+        assert_eq!(buf.position(), (0, 11));
+        assert_eq!(buf.cursor(), (0, 11));
 
-        enact(&mut buf, rows, cols, &[(C::Down, (1, 5), (1, 5))]);
+        enact(&mut buf, rows, cols, &[(C::Down, (1, 6), (1, 6))]);
     }
 
     #[test]
@@ -379,9 +414,9 @@ mod tests {
         for _ in 0..11 {
             buf.move_cursor(C::Right, rows, cols);
         }
-        assert_eq!(buf.position(), (0, 10));
-        assert_eq!(buf.cursor(), (0, 6));
+        assert_eq!(buf.position(), (0, 11));
+        assert_eq!(buf.cursor(), (0, 7));
 
-        enact(&mut buf, rows, cols, &[(C::Down, (1, 5), (1, 5))]);
+        enact(&mut buf, rows, cols, &[(C::Down, (1, 6), (1, 6))]);
     }
 }

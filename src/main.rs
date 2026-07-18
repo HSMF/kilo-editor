@@ -1,7 +1,7 @@
 use std::{io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
-use log::LevelFilter;
+use log::{LevelFilter, debug};
 use log4rs::{
     append::file::FileAppender,
     config::{Appender, Root},
@@ -82,6 +82,8 @@ pub enum CursorDirection {
 pub enum Input {
     Char(u8),
     Arrow(CursorDirection),
+    Enter,
+    Backspace,
     PageUp,
     PageDown,
 }
@@ -111,10 +113,10 @@ fn move_cursor(conf: &mut EditorConfig, c: CursorDirection) {
 fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
     match ch {
         Input::Arrow(direction) => move_cursor(conf, direction),
-        Input::Char(b'h') => move_cursor(conf, CursorDirection::Left),
-        Input::Char(b'l') => move_cursor(conf, CursorDirection::Right),
-        Input::Char(b'k') => move_cursor(conf, CursorDirection::Up),
-        Input::Char(b'j') => move_cursor(conf, CursorDirection::Down),
+        // Input::Char(b'h') => move_cursor(conf, CursorDirection::Left),
+        // Input::Char(b'l') => move_cursor(conf, CursorDirection::Right),
+        // Input::Char(b'k') => move_cursor(conf, CursorDirection::Up),
+        // Input::Char(b'j') => move_cursor(conf, CursorDirection::Down),
         Input::Char(ch) if ch == ctrl_key(b'd') => return handle_input(conf, Input::PageDown),
         Input::Char(ch) if ch == ctrl_key(b'u') => return handle_input(conf, Input::PageUp),
         Input::PageDown => {
@@ -130,7 +132,15 @@ fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
         Input::Char(ch) if ch == ctrl_key(b'q') || ch == ctrl_key(b'w') => {
             return ControlFlow::Break(());
         }
-        _ => {}
+        Input::Char(b'\x1b') => {
+            debug!("ignoring stray escape char");
+        }
+        Input::Char(ch) => {
+            debug!("inserting {ch:?}");
+            conf.buf.insert_char(ch as char, conf.rows, conf.cols);
+        }
+        Input::Backspace => todo!(),
+        Input::Enter => todo!(),
     }
     ControlFlow::Continue(())
 }

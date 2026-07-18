@@ -69,6 +69,14 @@ where
         }
     }
 
+    fn map(x: u8) -> Input {
+        match x {
+            127 => Input::Backspace,
+            b'\r' | b'\n' => Input::Enter,
+            _ => Input::Char(x),
+        }
+    }
+
     pub fn getch(&mut self) -> Option<Input> {
         if let SeqMode::Drain(mut v) = self.seq {
             let ret = v.remove(0);
@@ -77,7 +85,7 @@ where
             } else {
                 self.seq = SeqMode::Drain(v);
             }
-            return Some(Input::Char(ret));
+            return Some(Self::map(ret));
         }
         let Some(ch) = self.src.get_char() else {
             if let SeqMode::Fill(av) = self.seq {
@@ -128,7 +136,7 @@ where
             return None;
         }
 
-        Some(Input::Char(ch))
+        Some(Self::map(ch))
     }
 }
 
