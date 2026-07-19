@@ -247,6 +247,16 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b':'), I::Char(b'q')], |a| {
             a.state.quit = true;
         });
+        // TODO: once command mode is supported, drop this
+        self.add_keymap(mode, [I::Char(b':'), I::Char(b'w')], |a| {
+            let Some(path) = a.buf.path() else {
+                return;
+            };
+            let path = path.to_owned();
+            a.buf.scrub();
+            let s = a.buf.save();
+            std::fs::write(path, &s).expect("cant write");
+        });
         self.configure_arrow_keys(mode);
     }
 
