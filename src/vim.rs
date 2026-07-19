@@ -13,6 +13,11 @@ pub enum Mode {
     Visual,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct RegisterFile {
+    unnamed: String,
+}
+
 impl Mode {
     pub fn str(&self) -> &'static str {
         match self {
@@ -26,6 +31,7 @@ impl Mode {
 pub struct VimState {
     mode: Mode,
     quit: bool,
+    registers: RegisterFile,
 }
 
 type MappingFunc = dyn Fn(MapArgs);
@@ -175,6 +181,11 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'k')], |a| a.buf.move_cursor(C::Up));
         self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
         self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = Mode::Insert);
+        self.add_keymap(mode, [I::Char(b'a')], |a| {
+            let (line, col) = a.buf.position();
+            a.buf.set_position(line, col + 1);
+            a.state.mode = Mode::Insert
+        });
         self.add_keymap(mode, [I::Char(b'o')], |a| {
             let (line, _) = a.buf.position();
             if let Some(row) = a.buf.get_row(line) {
@@ -182,6 +193,34 @@ impl Vim {
             }
             a.buf.add_newline();
             a.state.mode = Mode::Insert
+        });
+        self.add_keymap(mode, [I::Char(b'0')], |a| {
+            let (line, _) = a.buf.position();
+            a.buf.set_position(line, 0);
+        });
+        self.add_keymap(mode, [I::Char(b'$')], |a| {
+            let (line, _) = a.buf.position();
+            let last = a.buf.get_row(line).unwrap_or("").len();
+            a.buf.set_position(line, last);
+        });
+        self.add_keymap(mode, [I::Char(b'y'), I::Char(b'y')], |a| {
+            let (line, _) = a.buf.position();
+            let line = a.buf.get_row(line).unwrap_or("").to_owned();
+            a.state.registers.set_register('"', line);
+        });
+        self.add_keymap(mode, [I::Char(b'd'), I::Char(b'd')], |a| {
+            let (line, _) = a.buf.position();
+            let content = a.buf.remove_line(line);
+            a.state.registers.set_register('"', content);
+        });
+        self.add_keymap(mode, [I::Char(b'p')], |a| {
+            let (line, ..) = a.buf.position();
+            let content = a.buf.get_row(line).unwrap_or("");
+            a.buf.set_position(line, content.len());
+            a.buf.add_newline();
+            for ch in a.state.registers.get_register('"').chars() {
+                a.buf.insert_char(ch);
+            }
         });
         self.add_keymap(mode, [I::Char(b'w')], |a| {
             let (line, col) = a.buf.position();
@@ -230,6 +269,25 @@ impl VimState {
         Self {
             mode: Mode::Normal,
             quit: false,
+            registers: RegisterFile::new(),
+        }
+    }
+}
+
+impl RegisterFile {
+    pub fn get_register(&self, name: char) -> &str {
+        assert_eq!(name, '"', "currently only unnamed (\") is supported");
+        &self.unnamed
+    }
+
+    pub fn set_register(&mut self, name: char, s: String) {
+        assert_eq!(name, '"', "currently only unnamed (\") is supported");
+        self.unnamed = s;
+    }
+
+    fn new() -> Self {
+        Self {
+            unnamed: String::new(),
         }
     }
 }

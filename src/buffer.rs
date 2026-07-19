@@ -198,7 +198,7 @@ impl Buffer {
     }
 
     pub fn get_row(&self, row: usize) -> Option<&str> {
-        self.row.get(self.row_off + row).map(|x| &*x.content)
+        self.row.get(row).map(|x| &*x.content)
     }
 
     pub fn get_row_render(&self, row: usize, width: usize) -> Option<&str> {
@@ -207,6 +207,10 @@ impl Buffer {
             let end = self.col_off + width;
             &row.render[Self::get_byte_range_from_char_range(&row.render, start, end)]
         })
+    }
+
+    pub fn remove_line(&mut self, line: usize) -> String {
+        self.row.remove(line).content
     }
 
     pub fn is_empty(&self) -> bool {
