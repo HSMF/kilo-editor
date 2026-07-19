@@ -1,7 +1,7 @@
 use std::{io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
-use log::{LevelFilter, debug};
+use log::LevelFilter;
 use log4rs::{
     append::file::FileAppender,
     config::{Appender, Root},
@@ -13,10 +13,13 @@ use termios::Termios;
 use crate::{
     buffer::Buffer,
     get_input::{GetChar, StdinSource},
+    vim::Vim,
 };
 
 mod buffer;
 mod get_input;
+pub mod trie;
+mod vim;
 
 struct StatusMessage {
     inner: Option<String>,
@@ -53,6 +56,7 @@ pub struct EditorConfig {
     cols: u16,
     out_buf: Vec<u8>,
     buf: Buffer,
+    v: Vim,
     getchar: GetChar<StdinSource>,
     status_message: StatusMessage,
 }
@@ -66,6 +70,7 @@ impl EditorConfig {
             status_message: StatusMessage::new(),
             out_buf: Vec::new(),
             buf: Buffer::new(),
+            v: Vim::new(),
             getchar: GetChar::new(StdinSource),
         })
     }
@@ -104,15 +109,16 @@ pub enum CursorDirection {
     Right,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default, Clone, Copy)]
 pub enum Input {
+    #[default]
+    Escape,
     Char(u8),
     Arrow(CursorDirection),
     Enter,
     Backspace,
     PageUp,
     PageDown,
-    Escape,
 }
 
 const fn ctrl_key(x: u8) -> u8 {
@@ -134,57 +140,58 @@ fn enter_raw_mode() -> Termios {
 }
 
 fn move_cursor(conf: &mut EditorConfig, c: CursorDirection) {
-    conf.buf.move_cursor(c, conf.rows, conf.cols);
+    conf.buf.move_cursor(c);
 }
 
 fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
-    match ch {
-        Input::Arrow(direction) => move_cursor(conf, direction),
-        // Input::Char(b'h') => move_cursor(conf, CursorDirection::Left),
-        // Input::Char(b'l') => move_cursor(conf, CursorDirection::Right),
-        // Input::Char(b'k') => move_cursor(conf, CursorDirection::Up),
-        // Input::Char(b'j') => move_cursor(conf, CursorDirection::Down),
-        Input::Char(ch) if ch == ctrl_key(b'd') => return handle_input(conf, Input::PageDown),
-        Input::Char(ch) if ch == ctrl_key(b'u') => return handle_input(conf, Input::PageUp),
-        Input::PageDown => {
-            for _ in 0..conf.rows / 2 {
-                move_cursor(conf, CursorDirection::Down);
-            }
-        }
-        Input::PageUp => {
-            for _ in 0..conf.rows / 2 {
-                move_cursor(conf, CursorDirection::Up);
-            }
-        }
-        Input::Char(ch) if ch == ctrl_key(b'q') || ch == ctrl_key(b'w') => {
-            return ControlFlow::Break(());
-        }
-        Input::Char(ch) if ch == ctrl_key(b's') => {
-            let Some(path) = conf.buf.path() else {
-                conf.set_message(format!("buffer {} has no path", conf.buf.name()));
-                return ControlFlow::Continue(());
-            };
-            let path = path.to_owned();
-            conf.buf.scrub();
-            let s = conf.buf.save();
-            let lines = conf.buf.num_lines();
-            std::fs::write(path, &s).expect("cant write");
-            conf.set_message(format!("{lines}L, {}B written", s.len()));
-        }
-        Input::Char(b'\x1b') => {
-            debug!("ignoring stray escape char");
-        }
-        Input::Char(ch) => {
-            debug!("inserting {ch:?}");
-            conf.buf.insert_char(ch as char, conf.rows, conf.cols);
-        }
-        Input::Escape => {
-            debug!("escape (the fate)")
-        }
-        Input::Backspace => conf.buf.delete_char(conf.rows, conf.cols),
-        Input::Enter => conf.buf.add_newline(conf.rows, conf.cols),
-    }
-    ControlFlow::Continue(())
+    conf.v.handle_input(&mut conf.buf, ch)
+    // match ch {
+    //     Input::Arrow(direction) => move_cursor(conf, direction),
+    //     // Input::Char(b'h') => move_cursor(conf, CursorDirection::Left),
+    //     // Input::Char(b'l') => move_cursor(conf, CursorDirection::Right),
+    //     // Input::Char(b'k') => move_cursor(conf, CursorDirection::Up),
+    //     // Input::Char(b'j') => move_cursor(conf, CursorDirection::Down),
+    //     Input::Char(ch) if ch == ctrl_key(b'd') => return handle_input(conf, Input::PageDown),
+    //     Input::Char(ch) if ch == ctrl_key(b'u') => return handle_input(conf, Input::PageUp),
+    //     Input::PageDown => {
+    //         for _ in 0..conf.rows / 2 {
+    //             move_cursor(conf, CursorDirection::Down);
+    //         }
+    //     }
+    //     Input::PageUp => {
+    //         for _ in 0..conf.rows / 2 {
+    //             move_cursor(conf, CursorDirection::Up);
+    //         }
+    //     }
+    //     Input::Char(ch) if ch == ctrl_key(b'q') || ch == ctrl_key(b'w') => {
+    //         return ControlFlow::Break(());
+    //     }
+    //     Input::Char(ch) if ch == ctrl_key(b's') => {
+    //         let Some(path) = conf.buf.path() else {
+    //             conf.set_message(format!("buffer {} has no path", conf.buf.name()));
+    //             return ControlFlow::Continue(());
+    //         };
+    //         let path = path.to_owned();
+    //         conf.buf.scrub();
+    //         let s = conf.buf.save();
+    //         let lines = conf.buf.num_lines();
+    //         std::fs::write(path, &s).expect("cant write");
+    //         conf.set_message(format!("{lines}L, {}B written", s.len()));
+    //     }
+    //     Input::Char(b'\x1b') => {
+    //         debug!("ignoring stray escape char");
+    //     }
+    //     Input::Char(ch) => {
+    //         debug!("inserting {ch:?}");
+    //         conf.buf.insert_char(ch as char);
+    //     }
+    //     Input::Escape => {
+    //         debug!("escape (the fate)")
+    //     }
+    //     Input::Backspace => conf.buf.delete_char(),
+    //     Input::Enter => conf.buf.add_newline(),
+    // }
+    // ControlFlow::Continue(())
 }
 
 fn get_terminal_size() -> Option<(u16, u16)> {
@@ -197,7 +204,7 @@ fn refresh_screen(conf: &mut EditorConfig) {
     draw_rows(conf);
     draw_status_bar(conf);
 
-    let (cy, cx) = conf.buf.cursor();
+    let (cy, cx) = conf.buf.cursor(conf.rows, conf.cols);
     write!(conf, "\x1b[{};{}H", cy + 1, cx + 1).unwrap();
 
     conf.append("\x1b[?25h");
@@ -211,6 +218,8 @@ fn draw_status_bar(conf: &mut EditorConfig) {
         col += s.len();
         conf.out_buf.extend_from_slice(s);
     };
+
+    append(conf.v.mode().str().as_bytes());
 
     append(b" ");
     append(conf.buf.name().as_bytes());
@@ -247,7 +256,7 @@ fn draw_rows(conf: &mut EditorConfig) {
     let rows = conf.rows;
     let cols = conf.cols;
     for y in 0..rows {
-        if let Some(row) = conf.buf.get_row(y as usize, cols as usize) {
+        if let Some(row) = conf.buf.get_row_render(y as usize, cols as usize) {
             conf.out_buf.extend_from_slice(row.as_bytes());
         } else if conf.buf.is_empty() && y == rows / 3 {
             let mut pad = cols / 2;
