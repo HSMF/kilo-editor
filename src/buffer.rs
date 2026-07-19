@@ -1,6 +1,5 @@
 use std::ops::Range;
 
-use log::debug;
 use tinyvec::{ArrayVec, array_vec};
 
 use crate::CursorDirection;

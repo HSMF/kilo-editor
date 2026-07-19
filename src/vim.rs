@@ -243,6 +243,10 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'd'), Input::Char(b'w')], |_| {
             debug!("delete word");
         });
+        // TODO: once command mode is supported, drop this
+        self.add_keymap(mode, [I::Char(b':'), I::Char(b'q')], |a| {
+            a.state.quit = true;
+        });
         self.configure_arrow_keys(mode);
     }
 
