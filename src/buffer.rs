@@ -93,9 +93,12 @@ impl Row {
     }
 
     fn delete_char(&mut self, cur_col: usize) {
-        let Some((i, _)) = self.content.char_indices().take(cur_col).last() else {
-            return;
-        };
+        let (i, _) = self
+            .content
+            .char_indices()
+            .take(cur_col)
+            .last()
+            .expect("cannot delete anything");
         self.content.remove(i);
         self.recompute_rendered();
     }
@@ -676,7 +679,9 @@ mod tests {
         let rows = 24;
         let cols = 80;
         let mut buf = new_buf("");
+        assert!(!buf.is_dirty());
         buf.insert_char('h', rows, cols);
+        assert!(buf.is_dirty());
         assert_eq!(buf.save(), "h\n");
     }
     #[test]
@@ -684,7 +689,11 @@ mod tests {
         let rows = 24;
         let cols = 80;
         let mut buf = new_buf("");
+        assert!(!buf.is_dirty());
         buf.delete_char(rows, cols);
+        assert!(!buf.is_dirty());
+        buf.scrub();
+        assert!(!buf.is_dirty());
         assert_eq!(buf.save(), "");
     }
 
@@ -705,5 +714,37 @@ mod tests {
             assert_eq!(buf.position(), (0, (i + 1).min(12)));
         }
         enact(&mut buf, rows, cols, &[(C::Down, (1, 10), (1, 13))]);
+    }
+
+    #[test]
+    fn render_special() {
+        let buf = new_buf("\x1b");
+        assert_eq!(buf.get_row(0, 80), Some("X1b"));
+    }
+
+    #[test]
+    fn num_lines() {
+        let buf = new_buf("");
+        assert_eq!(buf.num_lines(), 0);
+        let buf = new_buf("foo");
+        assert_eq!(buf.num_lines(), 1);
+        let buf = new_buf("foo\nbar");
+        assert_eq!(buf.num_lines(), 2);
+    }
+
+    #[test]
+    fn default() {
+        let buf = Buffer::default();
+        assert!(!buf.dirty);
+        assert!(buf.is_empty());
+        assert_eq!(buf.position(), (0, 0));
+        assert_eq!(buf.num_lines(), 0);
+        assert!(buf.path().is_none());
+    }
+
+    #[test]
+    fn name() {
+        let buf = Buffer::read("name".to_string(), "");
+        assert_eq!(buf.name(), "name");
     }
 }

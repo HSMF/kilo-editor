@@ -259,4 +259,83 @@ mod tests {
             vec![Input::Char(b'\x1b'), Input::Char(b'['), Input::Char(b',')]
         );
     }
+
+    #[test]
+    fn long_unrecognized() {
+        let i = MockInput::new().chars("\x1b[,1234567890").pause();
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(
+            x,
+            vec![
+                Input::Char(b'\x1b'),
+                Input::Char(b'['),
+                Input::Char(b','),
+                Input::Char(b'1'),
+                Input::Char(b'2'),
+                Input::Char(b'3'),
+                Input::Char(b'4'),
+                Input::Char(b'5'),
+                Input::Char(b'6'),
+                Input::Char(b'7'),
+                Input::Char(b'8'),
+                Input::Char(b'9'),
+                Input::Char(b'0'),
+            ]
+        );
+    }
+
+    #[test]
+    fn backspace() {
+        let i = MockInput::new().chars("h\x7f");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, vec![Input::Char(b'h'), Input::Backspace]);
+    }
+
+    #[test]
+    fn newline() {
+        let i = MockInput::new().chars("h\n");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, vec![Input::Char(b'h'), Input::Enter]);
+    }
+
+    #[test]
+    fn escape() {
+        let i = MockInput::new().chars("\x1b");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, vec![Input::Escape]);
+    }
+
+    #[test]
+    fn arrow_keys() {
+        let i = MockInput::new().chars("\x1b[A\x1b[C\x1b[B\x1b[D");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(
+            x,
+            vec![
+                Input::Arrow(CursorDirection::Up),
+                Input::Arrow(CursorDirection::Right),
+                Input::Arrow(CursorDirection::Down),
+                Input::Arrow(CursorDirection::Left),
+            ]
+        );
+    }
+
+    #[test]
+    fn page_up() {
+        let i = MockInput::new().chars("\x1b[5~\x1b[6~");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, vec![Input::PageUp, Input::PageDown]);
+    }
 }
