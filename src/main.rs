@@ -132,6 +132,14 @@ fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
         Input::Char(ch) if ch == ctrl_key(b'q') || ch == ctrl_key(b'w') => {
             return ControlFlow::Break(());
         }
+        Input::Char(ch) if ch == ctrl_key(b's') => {
+            let Some(path) = conf.buf.path() else {
+                conf.set_message(format!("buffer {} has no path", conf.buf.name()));
+                return ControlFlow::Continue(());
+            };
+            let s = conf.buf.save();
+            std::fs::write(path, s).expect("cant write");
+        }
         Input::Char(b'\x1b') => {
             debug!("ignoring stray escape char");
         }
@@ -139,8 +147,8 @@ fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
             debug!("inserting {ch:?}");
             conf.buf.insert_char(ch as char, conf.rows, conf.cols);
         }
-        Input::Backspace => todo!(),
-        Input::Enter => todo!(),
+        Input::Backspace => conf.buf.delete_char(conf.rows, conf.cols),
+        Input::Enter => conf.buf.add_newline(conf.rows, conf.cols),
     }
     ControlFlow::Continue(())
 }
@@ -250,7 +258,7 @@ fn main() -> anyhow::Result<()> {
 
     match std::env::args().nth(1) {
         Some(file) => {
-            let c = std::fs::read_to_string(&file)?;
+            let c = std::fs::read_to_string(&file).unwrap_or_default();
             conf.buf = Buffer::read(file, &c);
         }
         None => conf.buf = Buffer::new(),

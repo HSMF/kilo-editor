@@ -9,6 +9,8 @@ use crate::CursorDirection;
 pub struct Row {
     content: String,
     render: String,
+    /// number of *visible* chars in `render`
+    render_chars: usize,
 }
 
 fn to_hex(x: u8) -> (char, char) {
@@ -30,18 +32,24 @@ impl Row {
         }
     }
 
-    fn rendered(s: &str) -> String {
+    fn rendered(s: &str) -> (String, usize) {
         let mut ret = String::new();
+        let mut len = 0;
         for ch in s.chars() {
             for r in Self::rendered_char(ch) {
                 ret.push(r)
             }
+            len += 1;
         }
-        ret
+        (ret, len)
     }
     pub fn new(content: String) -> Self {
-        let render = Self::rendered(&content);
-        Self { content, render }
+        let (render, len) = Self::rendered(&content);
+        Self {
+            content,
+            render_chars: len,
+            render,
+        }
     }
 
     fn char_idx_to_byte_idx(s: &str, idx: usize) -> usize {
@@ -76,22 +84,49 @@ impl Row {
         } else {
             let idx = Self::char_idx_to_byte_idx(&self.content, cur_col);
             self.content.insert(idx, ch);
-
-            let mut idx = Self::char_idx_to_byte_idx(&self.render, cur_col);
-            for ch in Self::rendered_char(ch) {
-                self.render.insert(idx, ch);
-                idx += ch.len_utf8();
-            }
+            self.recompute_rendered();
         }
+    }
+
+    fn recompute_rendered(&mut self) {
+        (self.render, self.render_chars) = Self::rendered(&self.content);
+    }
+
+    fn delete_char(&mut self, cur_col: usize) {
+        let Some((i, _)) = self.content.char_indices().take(cur_col).last() else {
+            return;
+        };
+        self.content.remove(i);
+        self.recompute_rendered();
+    }
+
+    fn append_row(&mut self, other: Row) {
+        self.content += &other.content;
+        self.render += &other.render;
+        self.render_chars += other.render_chars;
+    }
+
+    fn split(&mut self, cur_col: usize) -> Row {
+        let (i, _) = self
+            .content
+            .char_indices()
+            .nth(cur_col)
+            .unwrap_or((self.content.len(), ' '));
+        let (before, after) = self.content.split_at(i);
+        let after = after.to_owned();
+        self.content.truncate(before.len());
+        self.recompute_rendered();
+        Row::new(after)
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Buffer {
     row: Vec<Row>,
-    pub row_off: usize,
-    pub col_off: usize,
+    row_off: usize,
+    col_off: usize,
     name: String,
+    path: Option<String>,
     cur_line: usize,
     cur_col: usize,
 }
@@ -105,6 +140,7 @@ impl Buffer {
             cur_line: 0,
             cur_col: 0,
             name: String::new(),
+            path: None,
         }
     }
 
@@ -116,8 +152,21 @@ impl Buffer {
             col_off: 0,
             cur_col: 0,
             cur_line: 0,
+            path: Some(name.clone()),
             name,
         }
+    }
+
+    pub fn save(&self) -> String {
+        let len = self.row.iter().map(|x| x.content.len() + 1).sum();
+        let mut ret = String::with_capacity(len);
+
+        for row in self.row.iter() {
+            ret.push_str(&row.content);
+            ret.push('\n');
+        }
+
+        ret
     }
 
     fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<usize> {
@@ -227,6 +276,15 @@ impl Buffer {
         &self.name
     }
 
+    fn scroll_to_fit(&mut self, rows: u16, cols: u16) {
+        let cx = (self.cur_col as isize - self.col_off as isize) as i32;
+        let cy = (self.cur_line as isize - self.row_off as isize) as i32;
+
+        self.fit_pos(cx, cy, rows, cols);
+
+        debug!("cx={}, cy={}, rows={}, cols={}", cx, cy, rows, cols);
+    }
+
     pub fn move_cursor(&mut self, c: CursorDirection, rows: u16, cols: u16) {
         use CursorDirection as C;
 
@@ -240,13 +298,7 @@ impl Buffer {
         }
 
         self.cur_col = self.cur_col.clamp(0, self.row_len(self.cur_line));
-
-        let cx = (self.cur_col as isize - self.col_off as isize) as i32;
-        let cy = (self.cur_line as isize - self.row_off as isize) as i32;
-
-        self.fit_pos(cx, cy, rows, cols);
-
-        debug!("cx={}, cy={}, rows={}, cols={}", cx, cy, rows, cols);
+        self.scroll_to_fit(rows, cols);
     }
 
     /// where to place the cursor (rows x cols coordinates)
@@ -264,11 +316,46 @@ impl Buffer {
     }
 
     pub fn insert_char(&mut self, ch: char, rows: u16, cols: u16) {
+        if self.row.is_empty() {
+            self.row.push(Row::new(String::with_capacity(1)));
+        }
         let row = &mut self.row[self.cur_line];
 
         row.insert_char(ch, self.cur_col);
 
         self.move_cursor(CursorDirection::Right, rows, cols);
+    }
+
+    pub fn delete_char(&mut self, rows: u16, cols: u16) {
+        if self.row.is_empty() {
+            return;
+        }
+        let row = &mut self.row[self.cur_line];
+        if self.cur_col == 0 && self.cur_line > 0 {
+            let removed = self.row.remove(self.cur_line);
+
+            self.cur_col = self.row[self.cur_line - 1].content_len();
+            self.row[self.cur_line - 1].append_row(removed);
+            self.cur_line -= 1;
+            self.scroll_to_fit(rows, cols);
+            return;
+        }
+        row.delete_char(self.cur_col);
+        self.move_cursor(CursorDirection::Left, rows, cols)
+    }
+
+    pub fn add_newline(&mut self, rows: u16, cols: u16) {
+        let row = &mut self.row[self.cur_line];
+        let next = row.split(self.cur_col);
+        self.row.insert(self.cur_line + 1, next);
+
+        self.cur_line += 1;
+        self.cur_col = 0;
+        self.scroll_to_fit(rows, cols);
+    }
+
+    pub(crate) fn path(&self) -> Option<&str> {
+        self.path.as_deref()
     }
 }
 
@@ -289,6 +376,7 @@ mod tests {
         assert_eq!(
             Buffer::read(name.clone(), &"hello".repeat(200)),
             Buffer {
+                path: Some(name.clone()),
                 name,
                 row: vec![Row::new("hello".repeat(200))],
                 row_off: 0,
@@ -297,6 +385,20 @@ mod tests {
                 cur_col: 0,
             }
         );
+    }
+
+    fn print_cursor(buf: &Buffer, cols: u16) {
+        if let Some(row) = buf.get_row(buf.cursor().0.into(), cols.into()) {
+            let (_, col) = buf.cursor();
+            let idx = col.into();
+            let idx = row
+                .char_indices()
+                .nth(idx)
+                .map(|x| x.0)
+                .unwrap_or(row.len());
+            let (before, after) = row.split_at(idx);
+            eprintln!("{before}│{after}");
+        }
     }
 
     type Position = (usize, usize);
@@ -309,6 +411,7 @@ mod tests {
     ) {
         for (i, &(action, pos, cursor)) in actions.iter().enumerate() {
             buf.move_cursor(action, rows, cols);
+            print_cursor(buf, cols);
             assert_eq!(buf.position(), pos, "position: #{i} {action:?}");
             assert_eq!(buf.cursor(), cursor, "cursor: #{i} {action:?}");
         }
@@ -418,5 +521,150 @@ mod tests {
         assert_eq!(buf.cursor(), (0, 7));
 
         enact(&mut buf, rows, cols, &[(C::Down, (1, 6), (1, 6))]);
+    }
+
+    #[test]
+    fn buffer_to_string() {
+        let buf = new_buf(
+            "
+            this
+            ",
+        );
+        assert_eq!(buf.save(), "this\n");
+    }
+
+    #[test]
+    fn insert_char() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("this");
+        assert_eq!(buf.position(), (0, 0));
+        buf.insert_char('a', rows, cols);
+        assert_eq!(buf.save(), "athis\n");
+    }
+
+    #[test]
+    fn append_char() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("this");
+        enact(
+            &mut buf,
+            rows,
+            cols,
+            &[
+                (C::Right, (0, 1), (0, 1)),
+                (C::Right, (0, 2), (0, 2)),
+                (C::Right, (0, 3), (0, 3)),
+                (C::Right, (0, 4), (0, 4)),
+            ],
+        );
+        buf.insert_char('a', rows, cols);
+        assert_eq!(buf.save(), "thisa\n");
+    }
+
+    #[test]
+    fn append_char_scroll() {
+        let rows = 24;
+        let cols = 3;
+        let mut buf = new_buf("this");
+        enact(
+            &mut buf,
+            rows,
+            cols,
+            &[
+                (C::Right, (0, 1), (0, 1)),
+                (C::Right, (0, 2), (0, 2)),
+                (C::Right, (0, 3), (0, 2)),
+                (C::Right, (0, 4), (0, 3)),
+            ],
+        );
+        buf.insert_char('a', rows, cols);
+        assert_eq!(buf.save(), "thisa\n");
+        assert_eq!(buf.position(), (0, 5));
+    }
+
+    #[test]
+    fn remove_char_at_start_of_line() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("this");
+        buf.delete_char(rows, cols);
+        assert_eq!(buf.save(), "this\n");
+        assert_eq!(buf.position(), (0, 0));
+    }
+
+    #[test]
+    fn remove_char() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("this");
+        enact(
+            &mut buf,
+            rows,
+            cols,
+            &[(C::Right, (0, 1), (0, 1)), (C::Right, (0, 2), (0, 2))],
+        );
+        buf.delete_char(rows, cols);
+        assert_eq!(buf.save(), "tis\n");
+        assert_eq!(buf.position(), (0, 1));
+    }
+
+    #[test]
+    fn remove_linebreak() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("foo\nbar");
+        enact(&mut buf, rows, cols, &[(C::Down, (1, 0), (1, 0))]);
+        buf.delete_char(rows, cols);
+        print_cursor(&buf, cols);
+        assert_eq!(buf.save(), "foobar\n");
+        assert_eq!(buf.position(), (0, 3));
+    }
+
+    #[test]
+    fn add_newline() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("this");
+        enact(
+            &mut buf,
+            rows,
+            cols,
+            &[(C::Right, (0, 1), (0, 1)), (C::Right, (0, 2), (0, 2))],
+        );
+        buf.add_newline(rows, cols);
+        assert_eq!(buf.save(), "th\nis\n");
+        assert_eq!(buf.position(), (1, 0));
+    }
+
+    #[test]
+    fn insert_tab() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("this");
+        buf.insert_char('\t', rows, cols);
+        assert_eq!(buf.get_row(0, cols.into()), Some("    this"));
+        enact(&mut buf, rows, cols, &[(C::Right, (0, 2), (0, 5))]);
+        buf.insert_char('\t', rows, cols);
+        assert_eq!(buf.save(), "\tt\this\n");
+        assert_eq!(buf.get_row(0, cols.into()), Some("    t    his"));
+    }
+
+    #[test]
+    fn edit_empty_file() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("");
+        buf.insert_char('h', rows, cols);
+        assert_eq!(buf.save(), "h\n");
+    }
+    #[test]
+    fn delete_in_empty_file() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf("");
+        buf.delete_char(rows, cols);
+        assert_eq!(buf.save(), "");
     }
 }
