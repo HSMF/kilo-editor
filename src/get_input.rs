@@ -89,6 +89,11 @@ where
         }
         let Some(ch) = self.src.get_char() else {
             if let SeqMode::Fill(av) = self.seq {
+                if av.as_slice() == [0x1b] {
+                    self.seq = SeqMode::Waiting;
+                    return Some(Input::Escape);
+                }
+
                 self.seq = SeqMode::Drain(av)
             }
             return None;

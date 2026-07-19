@@ -129,6 +129,7 @@ pub struct Buffer {
     path: Option<String>,
     cur_line: usize,
     cur_col: usize,
+    dirty: bool,
 }
 
 impl Buffer {
@@ -141,6 +142,7 @@ impl Buffer {
             cur_col: 0,
             name: String::new(),
             path: None,
+            dirty: false,
         }
     }
 
@@ -154,7 +156,13 @@ impl Buffer {
             cur_line: 0,
             path: Some(name.clone()),
             name,
+            dirty: false,
         }
+    }
+
+    /// mark as "not dirty"
+    pub fn scrub(&mut self) {
+        self.dirty = false;
     }
 
     pub fn save(&self) -> String {
@@ -183,7 +191,7 @@ impl Buffer {
     }
 
     fn row_len(&self, row: usize) -> usize {
-        self.row.get(row).map(Row::render_len).unwrap_or(0)
+        self.row.get(row).map(Row::content_len).unwrap_or(0)
     }
 
     pub fn get_row(&self, row: usize, width: usize) -> Option<&str> {
@@ -316,6 +324,7 @@ impl Buffer {
     }
 
     pub fn insert_char(&mut self, ch: char, rows: u16, cols: u16) {
+        self.dirty = true;
         if self.row.is_empty() {
             self.row.push(Row::new(String::with_capacity(1)));
         }
@@ -327,9 +336,10 @@ impl Buffer {
     }
 
     pub fn delete_char(&mut self, rows: u16, cols: u16) {
-        if self.row.is_empty() {
+        if self.row.is_empty() || (self.cur_line == 0 && self.cur_col == 0) {
             return;
         }
+        self.dirty = true;
         let row = &mut self.row[self.cur_line];
         if self.cur_col == 0 && self.cur_line > 0 {
             let removed = self.row.remove(self.cur_line);
@@ -345,6 +355,7 @@ impl Buffer {
     }
 
     pub fn add_newline(&mut self, rows: u16, cols: u16) {
+        self.dirty = true;
         let row = &mut self.row[self.cur_line];
         let next = row.split(self.cur_col);
         self.row.insert(self.cur_line + 1, next);
@@ -356,6 +367,14 @@ impl Buffer {
 
     pub(crate) fn path(&self) -> Option<&str> {
         self.path.as_deref()
+    }
+
+    pub fn num_lines(&self) -> usize {
+        self.row.len()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
     }
 }
 
@@ -377,6 +396,7 @@ mod tests {
             Buffer::read(name.clone(), &"hello".repeat(200)),
             Buffer {
                 path: Some(name.clone()),
+                dirty: false,
                 name,
                 row: vec![Row::new("hello".repeat(200))],
                 row_off: 0,
@@ -666,5 +686,24 @@ mod tests {
         let mut buf = new_buf("");
         buf.delete_char(rows, cols);
         assert_eq!(buf.save(), "");
+    }
+
+    #[test]
+    fn move_cursor_with_tabs() {
+        let rows = 24;
+        let cols = 80;
+        let mut buf = new_buf(
+            "
+            int main() {
+            	return 0;
+            }
+            ",
+        );
+        for i in 0..13 {
+            buf.move_cursor(C::Right, rows, cols);
+            print_cursor(&buf, cols);
+            assert_eq!(buf.position(), (0, (i + 1).min(12)));
+        }
+        enact(&mut buf, rows, cols, &[(C::Down, (1, 10), (1, 13))]);
     }
 }

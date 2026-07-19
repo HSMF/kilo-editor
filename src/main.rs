@@ -1,4 +1,4 @@
-use std::{io::Write, ops::ControlFlow, os::fd::AsRawFd};
+use std::{fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
 use log::{LevelFilter, debug};
@@ -18,13 +18,43 @@ use crate::{
 mod buffer;
 mod get_input;
 
+struct StatusMessage {
+    inner: Option<String>,
+    alive_for: usize,
+}
+
+impl StatusMessage {
+    fn new() -> Self {
+        Self {
+            inner: None,
+            alive_for: 0,
+        }
+    }
+
+    pub fn set_message(&mut self, m: String) {
+        self.alive_for = 30;
+        self.inner = Some(m);
+    }
+
+    pub fn tick(&mut self) {
+        self.alive_for = self.alive_for.saturating_sub(1);
+        if self.alive_for == 0 {
+            self.inner = None;
+        }
+    }
+
+    pub fn msg(&self) -> Option<&str> {
+        self.inner.as_deref()
+    }
+}
+
 pub struct EditorConfig {
     rows: u16,
     cols: u16,
     out_buf: Vec<u8>,
     buf: Buffer,
     getchar: GetChar<StdinSource>,
-    status_message: Option<String>,
+    status_message: StatusMessage,
 }
 
 impl EditorConfig {
@@ -33,7 +63,7 @@ impl EditorConfig {
         Ok(Self {
             rows: rows - 1,
             cols,
-            status_message: None,
+            status_message: StatusMessage::new(),
             out_buf: Vec::new(),
             buf: Buffer::new(),
             getchar: GetChar::new(StdinSource),
@@ -52,11 +82,7 @@ impl EditorConfig {
     }
 
     pub fn set_message(&mut self, msg: String) {
-        self.status_message = Some(msg);
-    }
-
-    pub fn clear_message(&mut self) {
-        self.status_message = None;
+        self.status_message.set_message(msg);
     }
 }
 
@@ -86,6 +112,7 @@ pub enum Input {
     Backspace,
     PageUp,
     PageDown,
+    Escape,
 }
 
 const fn ctrl_key(x: u8) -> u8 {
@@ -137,8 +164,12 @@ fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
                 conf.set_message(format!("buffer {} has no path", conf.buf.name()));
                 return ControlFlow::Continue(());
             };
+            let path = path.to_owned();
+            conf.buf.scrub();
             let s = conf.buf.save();
-            std::fs::write(path, s).expect("cant write");
+            let lines = conf.buf.num_lines();
+            std::fs::write(path, &s).expect("cant write");
+            conf.set_message(format!("{lines}L, {}B written", s.len()));
         }
         Input::Char(b'\x1b') => {
             debug!("ignoring stray escape char");
@@ -146,6 +177,9 @@ fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
         Input::Char(ch) => {
             debug!("inserting {ch:?}");
             conf.buf.insert_char(ch as char, conf.rows, conf.cols);
+        }
+        Input::Escape => {
+            debug!("escape (the fate)")
         }
         Input::Backspace => conf.buf.delete_char(conf.rows, conf.cols),
         Input::Enter => conf.buf.add_newline(conf.rows, conf.cols),
@@ -194,7 +228,11 @@ fn draw_status_bar(conf: &mut EditorConfig) {
         .unwrap_or(buf.len());
     append(&buf[..pre]);
 
-    if let Some(sm) = &conf.status_message {
+    if conf.buf.is_dirty() {
+        append(b" [+]");
+    }
+
+    if let Some(sm) = &conf.status_message.msg() {
         append(b" ");
         append(sm.as_bytes());
     }
@@ -254,7 +292,11 @@ fn main() -> anyhow::Result<()> {
     let orig_termios = enter_raw_mode();
     let mut conf = EditorConfig::init()?;
 
-    conf.set_message("hello world".into());
+    conf.set_message(format!(
+        "welcome to {} v{}",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION")
+    ));
 
     match std::env::args().nth(1) {
         Some(file) => {
@@ -265,6 +307,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     loop {
+        conf.status_message.tick();
         refresh_screen(&mut conf);
         if let Some(ch) = conf.getchar.getch() {
             match handle_input(&mut conf, ch) {
