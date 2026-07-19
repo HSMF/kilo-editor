@@ -1,4 +1,4 @@
-use std::{fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
+use std::{io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
 use log::{LevelFilter, debug};
