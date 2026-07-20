@@ -12,4 +12,5 @@ termios = "0.3.3"
 tinyvec = { version = "1.12.0", features = ["std"] }
 
 [dev-dependencies]
+tempfile = "3.27.0"
 textwrap = "0.16.2"

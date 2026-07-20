@@ -136,38 +136,6 @@ mod tests {
 
     use super::*;
 
-    #[expect(dead_code)]
-    trait Expect<'a, K: Default, V, const N: usize> {
-        fn expect_subtrie(self) -> Subtrie<'a, K, V, N>;
-        fn expect_value(self) -> &'a V;
-    }
-
-    impl<'a, K: Default, V, const N: usize> Expect<'a, K, V, N> for Option<GetResult<'a, K, V, N>> {
-        fn expect_subtrie(self) -> Subtrie<'a, K, V, N> {
-            match self {
-                Some(GetResult::Subtrie(s)) => s,
-                _ => panic!("not a subtrie"),
-            }
-        }
-
-        fn expect_value(self) -> &'a V {
-            match self {
-                Some(GetResult::Value(v)) => v,
-                _ => panic!("not a value"),
-            }
-        }
-    }
-
-    impl<'a, K: Default, V, const N: usize> GetResult<'a, K, V, N> {
-        #[cfg(test)]
-        pub fn expect_subtrie(self) -> Subtrie<'a, K, V, N> {
-            match self {
-                Self::Subtrie(s) => s,
-                _ => panic!("not a subtrie"),
-            }
-        }
-    }
-
     #[test]
     fn it_works() {
         let mut x = Trie::new();
@@ -183,5 +151,24 @@ mod tests {
         assert!(res.is_none());
         let res = x.get([&'b']);
         assert!(matches!(res, Some(GetResult::Value(2))));
+    }
+
+    #[test]
+    fn similar_mappings() {
+        let mut x = Trie::default();
+        x.insert(['y', 'i', 'w'], 1);
+        x.insert(['y', 'i', 'W'], 2);
+        let res = x.get(['y', 'i', 'w'].iter());
+        assert!(matches!(res, Some(GetResult::Value(1))));
+
+        let res = x.get(['y', 'i', 'W'].iter());
+        assert!(matches!(res, Some(GetResult::Value(2))));
+    }
+
+    #[test]
+    fn replace() {
+        let mut x = Trie::default();
+        x.insert("foo".chars(), 1);
+        assert_eq!(x.insert("foo".chars(), 2), Some(1));
     }
 }

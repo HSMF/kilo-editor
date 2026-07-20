@@ -14,8 +14,22 @@ pub enum Mode {
 }
 
 #[derive(Debug, PartialEq)]
+struct RegisterEntry {
+    value: String,
+    yanked_linewise: bool,
+}
+impl RegisterEntry {
+    fn new(value: String) -> Self {
+        Self {
+            value,
+            yanked_linewise: false,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct RegisterFile {
-    unnamed: String,
+    unnamed: RegisterEntry,
 }
 
 impl Mode {
@@ -221,6 +235,7 @@ impl Vim {
             for ch in a.state.registers.get_register('"').chars() {
                 a.buf.insert_char(ch);
             }
+            a.buf.set_position(line + 1, 0);
         });
         self.add_keymap(mode, [I::Char(b'w')], |a| {
             let (line, col) = a.buf.position();
@@ -291,17 +306,17 @@ impl VimState {
 impl RegisterFile {
     pub fn get_register(&self, name: char) -> &str {
         assert_eq!(name, '"', "currently only unnamed (\") is supported");
-        &self.unnamed
+        &self.unnamed.value
     }
 
     pub fn set_register(&mut self, name: char, s: String) {
         assert_eq!(name, '"', "currently only unnamed (\") is supported");
-        self.unnamed = s;
+        self.unnamed.value = s;
     }
 
     fn new() -> Self {
         Self {
-            unnamed: String::new(),
+            unnamed: RegisterEntry::new(String::new()),
         }
     }
 }
@@ -332,5 +347,155 @@ mod tests {
         let _ = v.handle_input(&mut buf, Input::Char(b'b'));
 
         assert_eq!(y.get(), 1);
+    }
+
+    #[test]
+    fn handle_key_unknown_sequence() {
+        let mut v = Vim::bare();
+        let mut buf = Buffer::new();
+        let x = Rc::new(Cell::new(0));
+        let y = Rc::clone(&x);
+        let z = Rc::clone(&x);
+        v.add_keymap(
+            Mode::Normal,
+            [Input::Char(b'a'), Input::Char(b'b')],
+            move |_| y.set(1),
+        );
+        v.add_keymap(Mode::Normal, [Input::Char(b'c')], move |_| z.set(2));
+
+        assert_eq!(x.get(), 0);
+
+        let _ = v.handle_input(&mut buf, Input::Char(b'a'));
+        assert_eq!(x.get(), 0);
+
+        let _ = v.handle_input(&mut buf, Input::Char(b'c'));
+        assert_eq!(x.get(), 0);
+
+        let _ = v.handle_input(&mut buf, Input::Char(b'c'));
+
+        assert_eq!(x.get(), 2);
+    }
+
+    #[test]
+    fn mode_str() {
+        assert_eq!(Mode::Normal.str(), "NORMAL");
+        assert_eq!(Mode::Insert.str(), "INSERT");
+        assert_eq!(Mode::Visual.str(), "VISUAL");
+    }
+
+    trait NoBreak {
+        fn no_break(self);
+        fn breaks(self);
+    }
+    impl NoBreak for ControlFlow<()> {
+        fn no_break(self) {
+            assert!(!self.is_break());
+        }
+        fn breaks(self) {
+            assert!(self.is_break());
+        }
+    }
+
+    fn buffer(s: &str) -> (tempfile::NamedTempFile, Buffer) {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let buf = Buffer::read(file.path().to_str().unwrap().to_owned(), s);
+        (file, buf)
+    }
+
+    fn feedkeys(vim: &mut Vim, buf: &mut Buffer, keys: &str) -> ControlFlow<()> {
+        for ch in keys.bytes() {
+            let ch = match ch {
+                b'\n' => Input::Enter,
+                _ => {
+                    assert!(ch.is_ascii());
+                    assert!(!ch.is_ascii_control());
+                    Input::Char(ch)
+                }
+            };
+            vim.handle_input(buf, ch)?;
+        }
+        ControlFlow::Continue(())
+    }
+
+    #[test]
+    fn insert_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        vim.handle_input(&mut buf, Input::Char(b'l')).no_break();
+        assert_eq!(buf.position(), (0, 1));
+        vim.handle_input(&mut buf, Input::Char(b'i')).no_break();
+        assert_eq!(vim.state.mode, Mode::Insert);
+        vim.handle_input(&mut buf, Input::Char(b' ')).no_break();
+        assert_eq!(vim.state.mode, Mode::Insert);
+        assert_eq!(buf.save(), "h ello world\n");
+    }
+
+    #[test]
+    fn motion_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
+        feedkeys(&mut vim, &mut buf, "llj").no_break();
+        assert_eq!(buf.position(), (1, 2));
+        feedkeys(&mut vim, &mut buf, "k").no_break();
+        assert_eq!(buf.position(), (0, 2));
+        feedkeys(&mut vim, &mut buf, "h").no_break();
+        assert_eq!(buf.position(), (0, 1));
+        feedkeys(&mut vim, &mut buf, "lllllll").no_break();
+        assert_eq!(buf.position(), (0, 5));
+    }
+
+    #[test]
+    fn yank_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
+        feedkeys(&mut vim, &mut buf, "yyjp").no_break();
+        assert_eq!(buf.save(), "hello\nworld\nhello\nfoo\nbar\n");
+        assert_eq!(buf.position(), (2, 0));
+    }
+
+    #[test]
+    fn w_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello  world");
+        feedkeys(&mut vim, &mut buf, "w").no_break();
+        assert_eq!(buf.position(), (0, 7));
+        feedkeys(&mut vim, &mut buf, "w").no_break();
+        assert_eq!(buf.position(), (0, 12));
+    }
+
+    #[test]
+    fn o_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello  world");
+        feedkeys(&mut vim, &mut buf, "o").no_break();
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(buf.position(), (1, 0));
+        assert_eq!(buf.save(), "hello  world\n\n");
+    }
+
+    #[test]
+    fn insert_newline_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("helloworld");
+        feedkeys(&mut vim, &mut buf, "llllli\n").no_break();
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(buf.position(), (1, 0));
+        assert_eq!(buf.save(), "hello\nworld\n");
+    }
+
+    #[test]
+    fn quit_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("helloworld");
+        feedkeys(&mut vim, &mut buf, ":q\n").breaks();
+    }
+
+    #[test]
+    fn write_works() {
+        let mut vim = Vim::new();
+        let (f, mut buf) = buffer("helloworld");
+        feedkeys(&mut vim, &mut buf, ":w\n").no_break();
+        let s = std::io::read_to_string(f).unwrap();
+        assert_eq!(s, "helloworld\n");
     }
 }
