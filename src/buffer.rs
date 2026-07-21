@@ -368,6 +368,9 @@ impl Buffer {
     }
 
     pub fn add_newline(&mut self) {
+        if self.row.is_empty() {
+            self.row.push(Row::new(String::new()));
+        }
         self.dirty = true;
         let row = &mut self.row[self.cur_line];
         let next = row.split(self.cur_col);

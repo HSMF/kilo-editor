@@ -431,6 +431,17 @@ mod tests {
     }
 
     #[test]
+    fn a_works() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "lllla,").no_break();
+        assert_eq!(buf.save(), "hello, world\n");
+        assert_eq!(vim.mode(), Mode::Insert);
+        vim.handle_input(&mut buf, Input::Escape).no_break();
+        assert_eq!(vim.mode(), Mode::Normal);
+    }
+
+    #[test]
     fn motion_works() {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
@@ -471,6 +482,11 @@ mod tests {
         assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(buf.position(), (1, 0));
         assert_eq!(buf.save(), "hello  world\n\n");
+
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("");
+        feedkeys(&mut vim, &mut buf, "o").no_break();
+        assert_eq!(buf.position(), (1, 0));
     }
 
     #[test]
@@ -497,5 +513,21 @@ mod tests {
         feedkeys(&mut vim, &mut buf, ":w\n").no_break();
         let s = std::io::read_to_string(f).unwrap();
         assert_eq!(s, "helloworld\n");
+    }
+
+    #[test]
+    fn page_up_down() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello\nworld\nfoo");
+        let (before, _) = buf.position();
+        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'd')))
+            .no_break();
+        let (after, _) = buf.position();
+        assert!(before < after);
+
+        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'u')))
+            .no_break();
+        let (last, _) = buf.position();
+        assert!(after > last);
     }
 }
