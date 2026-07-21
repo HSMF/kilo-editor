@@ -391,6 +391,14 @@ impl Buffer {
     pub fn is_dirty(&self) -> bool {
         self.dirty
     }
+
+    pub fn set_path(&mut self, path: String) {
+        self.path = Some(path);
+    }
+
+    pub fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
 }
 
 impl Default for Buffer {

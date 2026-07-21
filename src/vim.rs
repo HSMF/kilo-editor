@@ -1,4 +1,4 @@
-use std::ops::ControlFlow;
+use std::{env, ops::ControlFlow, process::Command};
 
 use log::{debug, warn};
 use tinyvec::{TinyVec, tiny_vec};
@@ -11,6 +11,7 @@ pub enum Mode {
     Normal,
     Insert,
     Visual,
+    Command,
 }
 
 #[derive(Debug, PartialEq)]
@@ -38,12 +39,47 @@ impl Mode {
             Mode::Normal => "NORMAL",
             Mode::Insert => "INSERT",
             Mode::Visual => "VISUAL",
+            Mode::Command => "COMMAND",
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum ModeState {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+    Command {
+        cmdline: String,
+    },
+}
+
+impl ModeState {
+    fn expect_command(&mut self) -> &mut String {
+        match self {
+            Self::Command { cmdline } => cmdline,
+            _ => panic!(
+                "expected to have state 'COMMAND' but got {}",
+                Mode::from(&*self).str()
+            ),
+        }
+    }
+}
+
+impl From<&ModeState> for Mode {
+    fn from(value: &ModeState) -> Self {
+        match value {
+            ModeState::Normal => Self::Normal,
+            ModeState::Insert => Self::Insert,
+            ModeState::Visual => Self::Visual,
+            ModeState::Command { .. } => Self::Command,
         }
     }
 }
 
 pub struct VimState {
-    mode: Mode,
+    mode: ModeState,
     quit: bool,
     registers: RegisterFile,
 }
@@ -57,6 +93,7 @@ pub struct Vim {
     normal_keymaps: Keymaps,
     insert_keymaps: Keymaps,
     visual_keymaps: Keymaps,
+    command_keymaps: Keymaps,
 }
 
 pub struct MapArgs<'a> {
@@ -83,6 +120,7 @@ impl Vim {
             normal_keymaps: Keymaps::new(),
             insert_keymaps: Keymaps::new(),
             visual_keymaps: Keymaps::new(),
+            command_keymaps: Keymaps::new(),
         }
     }
 
@@ -90,7 +128,15 @@ impl Vim {
         let mut ret = Self::bare();
         ret.configure_normal_mode();
         ret.configure_insert_mode();
+        ret.configure_command_mode();
         ret
+    }
+
+    pub fn command_str(&self) -> Option<&str> {
+        match &self.state.mode {
+            ModeState::Command { cmdline } => Some(cmdline),
+            _ => None,
+        }
     }
 
     fn handle_key<'a>(
@@ -119,6 +165,7 @@ impl Vim {
             Mode::Normal => insert!(self, normal_keymaps),
             Mode::Insert => insert!(self, insert_keymaps),
             Mode::Visual => insert!(self, visual_keymaps),
+            Mode::Command => insert!(self, command_keymaps),
         }
     }
 
@@ -149,17 +196,31 @@ impl Vim {
                 }
             }};
         }
-        match self.state.mode {
-            Mode::Normal => handle_mode!(self, normal_keymaps),
-            Mode::Insert => {
+        match &mut self.state.mode {
+            ModeState::Normal => handle_mode!(
+                self,
+                normal_keymaps,
+                fallback = { debug!("unknown input {:?}", self.cur_input) }
+            ),
+            ModeState::Insert => {
                 handle_mode!(
                     self,
                     insert_keymaps,
                     fallback = self.fallback_insert(buf, ch)
                 )
             }
+            ModeState::Command { cmdline } => handle_mode!(
+                self,
+                command_keymaps,
+                fallback = {
+                    match ch {
+                        Input::Char(ch) => cmdline.push(ch as char),
+                        _ => todo!(),
+                    }
+                }
+            ),
 
-            Mode::Visual => todo!(),
+            ModeState::Visual => todo!(),
         }
         if self.state.quit {
             ControlFlow::Break(())
@@ -169,7 +230,7 @@ impl Vim {
     }
 
     pub fn mode(&self) -> Mode {
-        self.state.mode
+        (&self.state.mode).into()
     }
 }
 
@@ -178,7 +239,7 @@ impl Vim {
         let mode = Mode::Normal;
         use CursorDirection as C;
         use Input as I;
-        self.add_keymap(mode, [I::Escape], |a| a.state.mode = Mode::Normal);
+        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
         self.add_keymap(mode, [I::Char(ctrl_key(b'w'))], |a| a.state.quit = true);
         self.add_keymap(mode, [I::Char(ctrl_key(b'u'))], |a| {
             for _ in 0..12 {
@@ -194,11 +255,11 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'j')], |a| a.buf.move_cursor(C::Down));
         self.add_keymap(mode, [I::Char(b'k')], |a| a.buf.move_cursor(C::Up));
         self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
-        self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = Mode::Insert);
+        self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = ModeState::Insert);
         self.add_keymap(mode, [I::Char(b'a')], |a| {
             let (line, col) = a.buf.position();
             a.buf.set_position(line, col + 1);
-            a.state.mode = Mode::Insert
+            a.state.mode = ModeState::Insert
         });
         self.add_keymap(mode, [I::Char(b'o')], |a| {
             let (line, _) = a.buf.position();
@@ -206,7 +267,7 @@ impl Vim {
                 a.buf.set_position(line, row.chars().count());
             }
             a.buf.add_newline();
-            a.state.mode = Mode::Insert
+            a.state.mode = ModeState::Insert
         });
         self.add_keymap(mode, [I::Char(b'0')], |a| {
             let (line, _) = a.buf.position();
@@ -258,19 +319,10 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'd'), Input::Char(b'w')], |_| {
             debug!("delete word");
         });
-        // TODO: once command mode is supported, drop this
-        self.add_keymap(mode, [I::Char(b':'), I::Char(b'q')], |a| {
-            a.state.quit = true;
-        });
-        // TODO: once command mode is supported, drop this
-        self.add_keymap(mode, [I::Char(b':'), I::Char(b'w')], |a| {
-            let Some(path) = a.buf.path() else {
-                return;
-            };
-            let path = path.to_owned();
-            a.buf.scrub();
-            let s = a.buf.save();
-            std::fs::write(path, &s).expect("cant write");
+        self.add_keymap(mode, [I::Char(b':')], |a| {
+            a.state.mode = ModeState::Command {
+                cmdline: String::new(),
+            }
         });
         self.configure_arrow_keys(mode);
     }
@@ -278,10 +330,30 @@ impl Vim {
     fn configure_insert_mode(&mut self) {
         let mode = Mode::Insert;
         use Input as I;
-        self.add_keymap(mode, [I::Escape], |a| a.state.mode = Mode::Normal);
+        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
         self.configure_arrow_keys(mode);
         self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
         self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
+    }
+
+    fn configure_command_mode(&mut self) {
+        let mode = Mode::Command;
+        use Input as I;
+
+        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
+        self.add_keymap(mode, [I::Enter], |a| a.state.execute_cmd(a.buf));
+        self.add_keymap(mode, [I::Backspace], |a| {
+            let s = a.state.mode.expect_command();
+            if s.pop().is_none() {
+                a.state.mode = ModeState::Normal;
+            }
+        });
+        {
+            use CursorDirection as C;
+            for dir in [C::Left, C::Right] {
+                self.add_keymap(mode, [I::Arrow(dir)], move |_| debug!("move {dir:?}"));
+            }
+        };
     }
 
     fn configure_arrow_keys(&mut self, mode: Mode) {
@@ -296,9 +368,42 @@ impl Vim {
 impl VimState {
     pub fn new() -> Self {
         Self {
-            mode: Mode::Normal,
+            mode: ModeState::Normal,
             quit: false,
             registers: RegisterFile::new(),
+        }
+    }
+
+    fn execute_cmd(&mut self, buf: &mut Buffer) {
+        let mut mode = std::mem::take(&mut self.mode);
+        let cmdline = mode.expect_command();
+        // TODO: implement vimL?
+        match cmdline.trim() {
+            "w" => {
+                let Some(path) = buf.path() else {
+                    return;
+                };
+                let path = path.to_owned();
+                buf.scrub();
+                let s = buf.save();
+                std::fs::write(path, &s).expect("cant write");
+            }
+            "q" => {
+                self.quit = true;
+            }
+            "q!" => {
+                self.quit = true;
+            }
+            s if let Some(filename) = s.strip_prefix("f ") => {
+                buf.set_path(filename.to_owned());
+                buf.set_name(filename.to_owned());
+            }
+            s if let Some(command) = s.strip_prefix("!") => {
+                let shell = env::var("SHELL").unwrap_or_else(|_| String::from("sh"));
+                let res = Command::new(shell).arg("-c").arg(command).output();
+                debug!("!{command} => {res:?}");
+            }
+            _ => debug!("TODO: notify that this command ({cmdline}) is unknown"),
         }
     }
 }
@@ -424,9 +529,9 @@ mod tests {
         vim.handle_input(&mut buf, Input::Char(b'l')).no_break();
         assert_eq!(buf.position(), (0, 1));
         vim.handle_input(&mut buf, Input::Char(b'i')).no_break();
-        assert_eq!(vim.state.mode, Mode::Insert);
+        assert_eq!(vim.mode(), Mode::Insert);
         vim.handle_input(&mut buf, Input::Char(b' ')).no_break();
-        assert_eq!(vim.state.mode, Mode::Insert);
+        assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(buf.save(), "h ello world\n");
     }
 

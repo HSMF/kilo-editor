@@ -65,7 +65,7 @@ impl EditorConfig {
     pub fn init() -> anyhow::Result<Self> {
         let (cols, rows) = get_terminal_size().ok_or(anyhow!("no terminal size"))?;
         Ok(Self {
-            rows: rows - 1,
+            rows: rows - 2,
             cols,
             status_message: StatusMessage::new(),
             out_buf: Vec::new(),
@@ -139,59 +139,8 @@ fn enter_raw_mode() -> Termios {
     orig
 }
 
-fn move_cursor(conf: &mut EditorConfig, c: CursorDirection) {
-    conf.buf.move_cursor(c);
-}
-
 fn handle_input(conf: &mut EditorConfig, ch: Input) -> ControlFlow<()> {
     conf.v.handle_input(&mut conf.buf, ch)
-    // match ch {
-    //     Input::Arrow(direction) => move_cursor(conf, direction),
-    //     // Input::Char(b'h') => move_cursor(conf, CursorDirection::Left),
-    //     // Input::Char(b'l') => move_cursor(conf, CursorDirection::Right),
-    //     // Input::Char(b'k') => move_cursor(conf, CursorDirection::Up),
-    //     // Input::Char(b'j') => move_cursor(conf, CursorDirection::Down),
-    //     Input::Char(ch) if ch == ctrl_key(b'd') => return handle_input(conf, Input::PageDown),
-    //     Input::Char(ch) if ch == ctrl_key(b'u') => return handle_input(conf, Input::PageUp),
-    //     Input::PageDown => {
-    //         for _ in 0..conf.rows / 2 {
-    //             move_cursor(conf, CursorDirection::Down);
-    //         }
-    //     }
-    //     Input::PageUp => {
-    //         for _ in 0..conf.rows / 2 {
-    //             move_cursor(conf, CursorDirection::Up);
-    //         }
-    //     }
-    //     Input::Char(ch) if ch == ctrl_key(b'q') || ch == ctrl_key(b'w') => {
-    //         return ControlFlow::Break(());
-    //     }
-    //     Input::Char(ch) if ch == ctrl_key(b's') => {
-    //         let Some(path) = conf.buf.path() else {
-    //             conf.set_message(format!("buffer {} has no path", conf.buf.name()));
-    //             return ControlFlow::Continue(());
-    //         };
-    //         let path = path.to_owned();
-    //         conf.buf.scrub();
-    //         let s = conf.buf.save();
-    //         let lines = conf.buf.num_lines();
-    //         std::fs::write(path, &s).expect("cant write");
-    //         conf.set_message(format!("{lines}L, {}B written", s.len()));
-    //     }
-    //     Input::Char(b'\x1b') => {
-    //         debug!("ignoring stray escape char");
-    //     }
-    //     Input::Char(ch) => {
-    //         debug!("inserting {ch:?}");
-    //         conf.buf.insert_char(ch as char);
-    //     }
-    //     Input::Escape => {
-    //         debug!("escape (the fate)")
-    //     }
-    //     Input::Backspace => conf.buf.delete_char(),
-    //     Input::Enter => conf.buf.add_newline(),
-    // }
-    // ControlFlow::Continue(())
 }
 
 fn get_terminal_size() -> Option<(u16, u16)> {
@@ -204,8 +153,14 @@ fn refresh_screen(conf: &mut EditorConfig) {
     draw_rows(conf);
     draw_status_bar(conf);
 
-    let (cy, cx) = conf.buf.cursor(conf.rows, conf.cols);
-    write!(conf, "\x1b[{};{}H", cy + 1, cx + 1).unwrap();
+    if let Some(commandline) = conf.v.command_str() {
+        conf.out_buf.extend_from_slice(b"\r\n\x1b[2K");
+        conf.out_buf.extend_from_slice(b":");
+        conf.out_buf.extend_from_slice(commandline.as_bytes());
+    } else {
+        let (cy, cx) = conf.buf.cursor(conf.rows, conf.cols);
+        write!(conf, "\x1b[{};{}H", cy + 1, cx + 1).unwrap();
+    }
 
     conf.append("\x1b[?25h");
     conf.flush().unwrap();
