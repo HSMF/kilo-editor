@@ -8,7 +8,7 @@ use crate::{
     buffer::Buffer,
     ctrl_key,
     location::Location,
-    motion::{self, Motion, Word},
+    motion::{self, BigWord, Motion, Word},
     trie::Trie,
 };
 
@@ -304,12 +304,10 @@ impl Vim {
             }
             a.buf.set_position(line + 1, 0);
         });
-        self.add_keymap(mode, [I::Char(b'w')], |a| {
-            let motion = motion::Word;
-            if let Some(next_pos) = motion.next(a.buf) {
-                a.buf.set_position(next_pos.line(), next_pos.col());
-            }
-        });
+        self.configure_simple_motion([I::Char(b'w')], motion::Word::new());
+        self.configure_simple_motion([I::Char(b'W')], motion::BigWord::new());
+        self.configure_simple_motion([I::Char(b'b')], motion::Back::new());
+        self.configure_simple_motion([I::Char(b'B')], motion::BigBack::new());
         self.configure_motions(&[I::Char(b'd')], |_a, start, end| {
             debug!("delete {start:?} -> {end:?}");
         });
@@ -322,6 +320,18 @@ impl Vim {
             }
         });
         self.configure_arrow_keys(mode);
+    }
+
+    fn configure_simple_motion<M>(&mut self, mapping: impl IntoIterator<Item = Input>, motion: M)
+    where
+        M: Motion + 'static,
+    {
+        let mode = Mode::Normal;
+        self.add_keymap(mode, mapping, move |a| {
+            if let Some(next) = motion.next(a.buf) {
+                a.buf.set_position(next.line(), next.col());
+            }
+        });
     }
 
     fn configure_motion<F>(
@@ -345,10 +355,11 @@ impl Vim {
 
     fn configure_motions<F>(&mut self, prefix: &[Input], f: F)
     where
-        F: Fn(MapArgs, Location, Location) + 'static,
+        F: Fn(MapArgs, Location, Location) + 'static + Clone,
     {
         use Input as I;
-        self.configure_motion(prefix, [I::Char(b'w')], Word, f);
+        self.configure_motion(prefix, [I::Char(b'w')], Word::new(), f.clone());
+        self.configure_motion(prefix, [I::Char(b'W')], BigWord::new(), f.clone());
     }
 
     fn configure_insert_mode(&mut self) {

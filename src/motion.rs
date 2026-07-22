@@ -29,40 +29,79 @@ where
     }
 }
 
-pub struct Word;
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+enum CharClass {
+    Word,
+    Symbol,
+    Space,
+}
 
-impl Word {
-    // fn inside(&self, buf: &Buffer) -> (Location, Location) {
-    //     let (line, col) = buf.position().destruct();
-    //     let cur_line = buf.get_row(line).unwrap_or("");
-    //     let Some(cur_char) = cur_line.char_indices().nth(col) else {
-    //         return (Location::default(), Location::default());
-    //     };
-    //
-    //     todo!()
-    // }
-    fn is_inside(&self, ch: char) -> bool {
-        ch.is_alphanumeric()
+trait Classify {
+    fn classify(&self, ch: char) -> CharClass;
+}
+
+/// `word`
+struct WordClassify;
+impl Classify for WordClassify {
+    fn classify(&self, ch: char) -> CharClass {
+        if ch.is_alphanumeric() {
+            CharClass::Word
+        } else if ch.is_whitespace() {
+            CharClass::Space
+        } else {
+            CharClass::Symbol
+        }
     }
 }
 
-impl Motion for Word {
+/// `WORD`
+struct BigWordClassify;
+impl Classify for BigWordClassify {
+    fn classify(&self, ch: char) -> CharClass {
+        if ch.is_whitespace() {
+            CharClass::Space
+        } else {
+            CharClass::Symbol
+        }
+    }
+}
+
+/// `w`
+struct WordMotion<C> {
+    classify: C,
+}
+
+impl<C> WordMotion<C> {
+    pub fn new(classify: C) -> Self {
+        Self { classify }
+    }
+}
+
+impl<C> Motion for WordMotion<C>
+where
+    C: Classify,
+{
     fn next(&self, buf: &Buffer) -> Option<Location> {
         let (line, col) = buf.position().destruct();
         let cur_line = buf.get_row(line)?;
-        let idx = cur_line.char_indices().map(|x| x.0).nth(col).unwrap_or(0);
+        let (idx, first_ch) = cur_line.char_indices().nth(col).unwrap_or((0, ' '));
 
         // skip the current word
         let rest = &cur_line[idx..];
         let mut col = col;
-        let (n, first_after) = rest.char_indices().find_idx(|ch| !self.is_inside(ch.1));
+        let first_class = self.classify.classify(first_ch);
+        let (n, first_after) = rest
+            .char_indices()
+            .find_idx(|ch| self.classify.classify(ch.1) != first_class);
         let first_after = first_after.map(|x| x.0).unwrap_or(rest.len());
         col += n;
 
         // skip whitespace, but only one line, idk... vim is weird
         let rest = &rest[first_after..];
 
-        let (n, first_after) = rest.char_indices().find_idx(|ch| self.is_inside(ch.1));
+        let (n, first_after) = rest
+            .char_indices()
+            .find_idx(|ch| self.classify.classify(ch.1) != CharClass::Space);
         if first_after.is_some() {
             return Some(Location::new(line, col + n));
         }
@@ -71,9 +110,128 @@ impl Motion for Word {
             return Some(Location::new(line, col + n));
         };
 
-        let (n, _) = rest.char_indices().find_idx(|ch| self.is_inside(ch.1));
+        let (n, _) = rest
+            .char_indices()
+            .find_idx(|ch| self.classify.classify(ch.1) != CharClass::Space);
         Some(Location::new(line + 1, n))
     }
+}
+
+struct BackMotion<C> {
+    classify: C,
+}
+
+impl<C> BackMotion<C> {
+    pub fn new(classify: C) -> Self {
+        Self { classify }
+    }
+}
+
+impl<C> Motion for BackMotion<C>
+where
+    C: Classify,
+{
+    fn next(&self, buf: &Buffer) -> Option<Location> {
+        let (line, col) = buf.position().destruct();
+        let Some(cur_line) = buf.get_row(line) else {
+            return Some(buf.position());
+        };
+        let (idx, first_ch) = cur_line.char_indices().nth(col).unwrap_or((0, ' '));
+        let first_class = self.classify.classify(first_ch);
+
+        let start = &cur_line[..idx];
+
+        // unfortunate naming
+        let skip_in_class = |s: &str, class: CharClass| {
+            let (n, first_after) = s
+                .char_indices()
+                .rev()
+                .find_idx(|ch| self.classify.classify(ch.1) != class);
+            (n, first_after.map(|x| x.0 + x.1.len_utf8()))
+        };
+
+        let (n, first_after) = skip_in_class(start, first_class);
+
+        let col = col - n;
+        if first_after.is_some() && n != 0 {
+            return Some(Location::new(line, col));
+        }
+
+        let l = first_after.unwrap_or(0);
+        let start = &start[..l];
+        let (n, first_after) = skip_in_class(start, CharClass::Space);
+        let col = col - n;
+
+        let mut line = line;
+        let mut col = col;
+        let l = first_after.unwrap_or(0);
+        let start = &start[..l];
+
+        let mut start = start;
+        if col == 0 && line > 0 {
+            line -= 1;
+            let cur_line = buf.get_row(line).expect("previous line exists");
+            col = cur_line.chars().count();
+
+            let (n, first_after) = skip_in_class(cur_line, CharClass::Space);
+            start = &cur_line[..first_after.unwrap_or(0)];
+            col -= n;
+        }
+
+        let last_class = start
+            .chars()
+            .last()
+            .map(|x| self.classify.classify(x))
+            .unwrap_or(CharClass::Space);
+
+        let (n, _) = skip_in_class(start, last_class);
+        let col = col - n;
+
+        Some(Location::new(line, col))
+    }
+}
+
+macro_rules! motion_with_word_classification {
+    (
+        $(
+        $(#[$meta:meta])*
+        pub struct $name:ident($motion:ident, $classifier:ident);
+        )*
+        ) => {
+        $(
+            $(#[$meta])*
+            pub struct $name($motion<$classifier>);
+
+            impl $name {
+                pub fn new() -> Self {
+                    Self($motion::new($classifier))
+                }
+            }
+
+            impl Default for $name {
+                fn default() -> Self {
+                    Self::new()
+                }
+            }
+
+            impl Motion for $name {
+                fn next(&self, buf: &Buffer) -> Option<Location> {
+                    self.0.next(buf)
+                }
+            }
+        )*
+    };
+}
+
+motion_with_word_classification! {
+    /// `w`
+    pub struct Word(WordMotion, WordClassify);
+    /// `W`
+    pub struct BigWord(WordMotion, BigWordClassify);
+    /// `b`
+    pub struct Back(BackMotion, WordClassify);
+    /// `B`
+    pub struct BigBack(BackMotion, BigWordClassify);
 }
 
 #[cfg(test)]
@@ -86,13 +244,13 @@ mod tests {
 
     macro_rules! motion_test {
         ($(
-                $name:ident: $motion:expr, $buf:expr, $start_loc:expr, $end_loc:expr ;
+                $name:ident: $motion:ident, $buf:expr, $start_loc:expr, $end_loc:expr ;
         )*) => {
             $(
                 #[test]
                 fn $name() {
                     let mut buf = buffer($buf);
-                    let motion = $motion;
+                    let motion = $motion::new();
                     let start = $start_loc;
                     buf.set_position(start.0, start.1);
 
@@ -108,9 +266,44 @@ mod tests {
         word_end_of_buf: Word, "hello world", (0,6), (0,11);
         word_middle: Word, "hello world", (0,3), (0,6);
         word_non_word: Word, "core::mem::swap", (0,4), (0,6);
+        word_path1: Word, "core::mem::swap", (0,0), (0,4);
+        word_path2: Word, "core::mem::swap", (0,4), (0,6);
+        word_path3: Word, "core::mem::swap", (0,6), (0,9);
+        word_path4: Word, "core::mem::swap", (0,9), (0,11);
+        word_path5: Word, "core::mem::swap", (0,11), (0,15);
         // word_newline: Word, "hello\nworld", (0,0), (1,0);
         word_empty_lines: Word, "\n\nhello", (0,0), (1,0);
         word_empty_lines2: Word, "\n\nhello", (1,0), (2,0);
-        word_weird: Word, "use anyhow::anyhow;\nuse log::LevelFilter;", (0, 12), (1,0);
+        word_weird: Word, "use anyhow::anyhow;\nuse log::LevelFilter;", (0, 18), (1,0);
+
+        big_word_start: BigWord, "hello world", (0,0), (0,6);
+        big_word_end_of_buf: BigWord, "hello world", (0,6), (0,11);
+        big_word_middle: BigWord, "hello world", (0,3), (0,6);
+        big_word_non_word: BigWord, "core::mem::swap", (0,4), (0,15);
+        big_word_path1: BigWord, "core::mem::swap", (0,0), (0,15);
+        big_word_path2: BigWord, "core::mem::swap", (0,4), (0,15);
+        big_word_path3: BigWord, "core::mem::swap", (0,6), (0,15);
+        big_word_path4: BigWord, "core::mem::swap", (0,11), (0,15);
+        big_word_empty_lines: BigWord, "\n\nhello", (0,0), (1,0);
+        big_word_empty_lines2: BigWord, "\n\nhello", (1,0), (2,0);
+        big_word_weird: BigWord, "use anyhow::anyhow;\nuse log::LevelFilter;", (0, 18), (1,0);
+
+        back_empty: Back, "", (0,0), (0,0);
+        back_start: Back, "hello world", (0,0), (0,0);
+        back_end1: Back, "hello world", (0,10), (0,6);
+        back_end2: Back, "hello world", (0,6), (0,0);
+        back_path1: Back, "core::mem::swap", (0,14), (0,11);
+        back_path2: Back, "core::mem::swap", (0,11), (0,9);
+        back_path3: Back, "core::mem::swap", (0,9), (0,6);
+        back_path4: Back, "core::mem::swap", (0,6), (0,4);
+        back_path5: Back, "core::mem::swap", (0,4), (0,0);
+        back_newline: Back, "hello\nworld", (1,0), (0,0);
+        back_newline_trail: Back, "hello  \nworld", (1,0), (0,0);
+    }
+
+    #[test]
+    fn requirement_for_classification() {
+        assert_eq!(WordClassify.classify('\n'), CharClass::Space);
+        assert_eq!(BigWordClassify.classify('\n'), CharClass::Space);
     }
 }
