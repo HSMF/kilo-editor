@@ -8,7 +8,7 @@ use crate::{
     buffer::Buffer,
     ctrl_key,
     location::Location,
-    motion::{self, BigWord, Motion, Word},
+    motion::{self, Back, BigBack, BigWord, Motion, Word},
     trie::Trie,
 };
 
@@ -322,7 +322,10 @@ impl Vim {
             let s = join_iter(a.buf.get_range(start, end));
             debug!("delete {start:?} -> {end:?}");
         });
-        self.configure_motions(&[I::Char(b'y')], |a, start, end| {
+        self.configure_motions(&[I::Char(b'y')], |a, mut start, mut end| {
+            if end < start {
+                (end, start) = (start, end);
+            }
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
         });
@@ -372,6 +375,8 @@ impl Vim {
         use Input as I;
         self.configure_motion(prefix, [I::Char(b'w')], Word::new(), f.clone());
         self.configure_motion(prefix, [I::Char(b'W')], BigWord::new(), f.clone());
+        self.configure_motion(prefix, [I::Char(b'b')], Back::new(), f.clone());
+        self.configure_motion(prefix, [I::Char(b'B')], BigBack::new(), f.clone());
     }
 
     fn configure_insert_mode(&mut self) {
