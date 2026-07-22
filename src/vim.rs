@@ -1,4 +1,4 @@
-use std::{env, ops::ControlFlow, process::Command};
+use std::{env, ops::ControlFlow, process::Command, str::Chars};
 
 use log::{debug, warn};
 use tinyvec::{TinyVec, tiny_vec};
@@ -22,7 +22,7 @@ pub enum Mode {
 }
 
 #[derive(Debug, PartialEq)]
-struct RegisterEntry {
+pub struct RegisterEntry {
     value: String,
     yanked_linewise: bool,
 }
@@ -32,6 +32,10 @@ impl RegisterEntry {
             value,
             yanked_linewise: false,
         }
+    }
+
+    pub fn chars(&self) -> Chars<'_> {
+        self.value.chars()
     }
 }
 
@@ -287,32 +291,40 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'y'), I::Char(b'y')], |a| {
             let line = a.buf.position().line();
             let line = a.buf.get_row(line).unwrap_or("").to_owned();
-            a.state.registers.set_register('"', line);
+            a.state.registers.set_register('"', line, true);
         });
         self.add_keymap(mode, [I::Char(b'd'), I::Char(b'd')], |a| {
             let line = a.buf.position().line();
             let content = a.buf.remove_line(line);
-            a.state.registers.set_register('"', content);
+            a.state.registers.set_register('"', content, true);
         });
         self.add_keymap(mode, [I::Char(b'p')], |a| {
+            // TODO: not quite correct
             let line = a.buf.position().line();
             let content = a.buf.get_row(line).unwrap_or("");
-            a.buf.set_position(line, content.len());
-            a.buf.add_newline();
-            for ch in a.state.registers.get_register('"').chars() {
+            let reg = a.state.registers.get_register('"');
+            if reg.yanked_linewise {
+                a.buf.set_position(line, content.len());
+                a.buf.add_newline();
+            }
+            for ch in reg.chars() {
                 a.buf.insert_char(ch);
             }
-            a.buf.set_position(line + 1, 0);
+            if reg.yanked_linewise {
+                a.buf.set_position(line + 1, 0);
+            }
         });
         self.configure_simple_motion([I::Char(b'w')], motion::Word::new());
         self.configure_simple_motion([I::Char(b'W')], motion::BigWord::new());
         self.configure_simple_motion([I::Char(b'b')], motion::Back::new());
         self.configure_simple_motion([I::Char(b'B')], motion::BigBack::new());
-        self.configure_motions(&[I::Char(b'd')], |_a, start, end| {
+        self.configure_motions(&[I::Char(b'd')], |a, start, end| {
+            let s = join_iter(a.buf.get_range(start, end));
             debug!("delete {start:?} -> {end:?}");
         });
-        self.configure_motions(&[I::Char(b'y')], |_a, start, end| {
-            debug!("yank {start:?} -> {end:?}");
+        self.configure_motions(&[I::Char(b'y')], |a, start, end| {
+            let s = join_iter(a.buf.get_range(start, end));
+            a.state.registers.set_register('"', s, false);
         });
         self.add_keymap(mode, [I::Char(b':')], |a| {
             a.state.mode = ModeState::Command {
@@ -449,14 +461,15 @@ impl VimState {
 }
 
 impl RegisterFile {
-    pub fn get_register(&self, name: char) -> &str {
+    pub fn get_register(&self, name: char) -> &RegisterEntry {
         assert_eq!(name, '"', "currently only unnamed (\") is supported");
-        &self.unnamed.value
+        &self.unnamed
     }
 
-    pub fn set_register(&mut self, name: char, s: String) {
+    pub fn set_register(&mut self, name: char, s: String, linewise: bool) {
         assert_eq!(name, '"', "currently only unnamed (\") is supported");
         self.unnamed.value = s;
+        self.unnamed.yanked_linewise = linewise;
     }
 
     fn new() -> Self {
@@ -464,6 +477,19 @@ impl RegisterFile {
             unnamed: RegisterEntry::new(String::new()),
         }
     }
+}
+
+fn join_iter<'a>(it: impl Iterator<Item = &'a str>) -> String {
+    let mut ret = String::new();
+    let mut needs_newline = false;
+    for line in it {
+        if needs_newline {
+            ret.push('\n');
+        }
+        needs_newline = true;
+        ret.push_str(line);
+    }
+    ret
 }
 
 #[cfg(test)]

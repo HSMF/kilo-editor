@@ -51,11 +51,8 @@ impl Row {
         }
     }
 
-    fn char_idx_to_byte_idx(s: &str, idx: usize) -> usize {
-        s.char_indices()
-            .nth(idx)
-            .map(|x| x.0)
-            .expect("byte index exists")
+    fn char_idx_to_byte_idx(s: &str, idx: usize) -> Option<usize> {
+        s.char_indices().nth(idx).map(|x| x.0)
     }
 
     pub fn render_len(&self) -> usize {
@@ -81,7 +78,8 @@ impl Row {
                 self.render.push(ch);
             }
         } else {
-            let idx = Self::char_idx_to_byte_idx(&self.content, cur_col);
+            let idx =
+                Self::char_idx_to_byte_idx(&self.content, cur_col).expect("byte index exists");
             self.content.insert(idx, ch);
             self.recompute_rendered();
         }
@@ -185,7 +183,8 @@ impl Buffer {
         for (i, (byte, _)) in s.char_indices().enumerate() {
             if i == start {
                 sb = Some(byte)
-            } else if i == end {
+            }
+            if i == end {
                 eb = byte
             }
         }
@@ -398,6 +397,61 @@ impl Buffer {
 
     pub fn set_name(&mut self, name: String) {
         self.name = name;
+    }
+
+    /// behaves like `nvim_buf_get_text`
+    /// lines inclusive, columns exclusive
+    pub fn get_range<'a>(&'a self, start: Location, end: Location) -> RangeIter<'a> {
+        RangeIter {
+            buf: self,
+            start,
+            end,
+        }
+    }
+
+    /// lines inclusive, columns exclusive
+    // TODO: do we want to return the deleted text?
+    pub fn delete_range(&mut self, start: Location, end: Location) {
+        todo!("delete range {start:?} {end:?}")
+    }
+
+    /// lines inclusive, columns exclusive
+    pub fn set_range<I, S>(&mut self, start: Location, end: Location, replacement: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        todo!("set range {start:?} {end:?}")
+    }
+}
+
+pub struct RangeIter<'a> {
+    buf: &'a Buffer,
+    start: Location,
+    end: Location,
+}
+
+impl<'a> Iterator for RangeIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start.line() > self.end.line() {
+            return None;
+        }
+        if self.start.line() == self.end.line() {
+            let ret = self.buf.get_row(self.start.line())?;
+            let range =
+                Buffer::get_byte_range_from_char_range(ret, self.start.col(), self.end.col());
+            let ret = &ret[range];
+            self.start = Location::new(self.start.line() + 1, 0);
+            return Some(ret);
+        }
+
+        let ret = self.buf.get_row(self.start.line())?;
+        let idx = Row::char_idx_to_byte_idx(ret, self.start.col()).unwrap_or(0);
+        self.start = Location::new(self.start.line() + 1, 0);
+
+        Some(&ret[idx..])
     }
 }
 
@@ -758,5 +812,36 @@ mod tests {
     fn name() {
         let buf = Buffer::read("name".to_string(), "");
         assert_eq!(buf.name(), "name");
+    }
+
+    macro_rules! get_range_tests {
+        (
+            $(
+                $name:ident: $buf:expr, $start:expr, $end:expr, $expected:expr
+            )*
+        ) =>{
+
+            $(
+
+                #[test]
+                fn $name() {
+                    let buffer = new_buf($buf);
+                    assert_eq!(
+                        buffer
+                            .get_range($start.into(), $end.into())
+                            .collect::<Vec<_>>(),
+                        $expected
+                    )
+                }
+            )*
+        };
+    }
+
+    get_range_tests! {
+        get_full_range: "hello\n\nworld", (0,0), (2,5), ["hello", "", "world"]
+        get_almost_full_range: "hello\n\nworld", (0,0), (2,4), ["hello", "", "worl"]
+        get_empty_range: "hello\n\nworld", (0,0), (0,0), [""]
+        get_on_one_line: "hello\n\nworld", (0,1), (0,3), ["el"]
+        get_invalid_range: "hello\n\nworld", (0, 1), (0, 100), ["ello"]
     }
 }
