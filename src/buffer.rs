@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use tinyvec::{ArrayVec, array_vec};
 
-use crate::CursorDirection;
+use crate::{CursorDirection, location::Location};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Row {
@@ -327,8 +327,8 @@ impl Buffer {
     }
 
     /// returns (line, col)
-    pub fn position(&self) -> (usize, usize) {
-        (self.cur_line, self.cur_col)
+    pub fn position(&self) -> Location {
+        Location::new(self.cur_line, self.cur_col)
     }
 
     /// returns (line, col)
@@ -455,7 +455,7 @@ mod tests {
         for (i, &(action, pos, cursor)) in actions.iter().enumerate() {
             buf.move_cursor(action);
             print_cursor(buf, rows, cols);
-            assert_eq!(buf.position(), pos, "position: #{i} {action:?}");
+            assert_eq!(buf.position(), pos.into(), "position: #{i} {action:?}");
             assert_eq!(buf.cursor(rows, cols), cursor, "cursor: #{i} {action:?}");
         }
     }
@@ -540,7 +540,7 @@ mod tests {
         for _ in 0..11 {
             buf.move_cursor(C::Right);
         }
-        assert_eq!(buf.position(), (0, 11));
+        assert_eq!(buf.position(), (0, 11).into());
         assert_eq!(buf.cursor(rows, cols), (0, 11));
 
         enact(&mut buf, rows, cols, &[(C::Down, (1, 6), (1, 6))]);
@@ -560,7 +560,7 @@ mod tests {
         for _ in 0..11 {
             buf.move_cursor(C::Right);
         }
-        assert_eq!(buf.position(), (0, 11));
+        assert_eq!(buf.position(), (0, 11).into());
         assert_eq!(buf.cursor(rows, cols), (0, 7));
 
         enact(&mut buf, rows, cols, &[(C::Down, (1, 6), (1, 6))]);
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn insert_char() {
         let mut buf = new_buf("this");
-        assert_eq!(buf.position(), (0, 0));
+        assert_eq!(buf.position(), (0, 0).into());
         buf.insert_char('a');
         assert_eq!(buf.save(), "athis\n");
     }
@@ -622,7 +622,7 @@ mod tests {
         );
         buf.insert_char('a');
         assert_eq!(buf.save(), "thisa\n");
-        assert_eq!(buf.position(), (0, 5));
+        assert_eq!(buf.position(), (0, 5).into());
     }
 
     #[test]
@@ -630,7 +630,7 @@ mod tests {
         let mut buf = new_buf("this");
         buf.delete_char();
         assert_eq!(buf.save(), "this\n");
-        assert_eq!(buf.position(), (0, 0));
+        assert_eq!(buf.position(), (0, 0).into());
     }
 
     #[test]
@@ -646,7 +646,7 @@ mod tests {
         );
         buf.delete_char();
         assert_eq!(buf.save(), "tis\n");
-        assert_eq!(buf.position(), (0, 1));
+        assert_eq!(buf.position(), (0, 1).into());
     }
 
     #[test]
@@ -658,7 +658,7 @@ mod tests {
         buf.delete_char();
         print_cursor(&mut buf, rows, cols);
         assert_eq!(buf.save(), "foobar\n");
-        assert_eq!(buf.position(), (0, 3));
+        assert_eq!(buf.position(), (0, 3).into());
     }
 
     #[test]
@@ -674,7 +674,7 @@ mod tests {
         );
         buf.add_newline();
         assert_eq!(buf.save(), "th\nis\n");
-        assert_eq!(buf.position(), (1, 0));
+        assert_eq!(buf.position(), (1, 0).into());
     }
 
     #[test]
@@ -723,7 +723,7 @@ mod tests {
         for i in 0..13 {
             buf.move_cursor(C::Right);
             print_cursor(&mut buf, rows, cols);
-            assert_eq!(buf.position(), (0, (i + 1).min(12)));
+            assert_eq!(buf.position(), (0, (i + 1).min(12)).into());
         }
         enact(&mut buf, rows, cols, &[(C::Down, (1, 10), (1, 13))]);
     }
@@ -749,7 +749,7 @@ mod tests {
         let buf = Buffer::default();
         assert!(!buf.dirty);
         assert!(buf.is_empty());
-        assert_eq!(buf.position(), (0, 0));
+        assert_eq!(buf.position(), (0, 0).into());
         assert_eq!(buf.num_lines(), 0);
         assert!(buf.path().is_none());
     }

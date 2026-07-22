@@ -3,7 +3,14 @@ use std::{env, ops::ControlFlow, process::Command};
 use log::{debug, warn};
 use tinyvec::{TinyVec, tiny_vec};
 
-use crate::{CursorDirection, Input, buffer::Buffer, ctrl_key, trie::Trie};
+use crate::{
+    CursorDirection, Input,
+    buffer::Buffer,
+    ctrl_key,
+    location::Location,
+    motion::{self, Motion, Word},
+    trie::Trie,
+};
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
 pub enum Mode {
@@ -240,7 +247,6 @@ impl Vim {
         use CursorDirection as C;
         use Input as I;
         self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
-        self.add_keymap(mode, [I::Char(ctrl_key(b'w'))], |a| a.state.quit = true);
         self.add_keymap(mode, [I::Char(ctrl_key(b'u'))], |a| {
             for _ in 0..12 {
                 a.buf.move_cursor(C::Up)
@@ -257,12 +263,12 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
         self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = ModeState::Insert);
         self.add_keymap(mode, [I::Char(b'a')], |a| {
-            let (line, col) = a.buf.position();
+            let (line, col) = a.buf.position().destruct();
             a.buf.set_position(line, col + 1);
             a.state.mode = ModeState::Insert
         });
         self.add_keymap(mode, [I::Char(b'o')], |a| {
-            let (line, _) = a.buf.position();
+            let line = a.buf.position().line();
             if let Some(row) = a.buf.get_row(line) {
                 a.buf.set_position(line, row.chars().count());
             }
@@ -270,26 +276,26 @@ impl Vim {
             a.state.mode = ModeState::Insert
         });
         self.add_keymap(mode, [I::Char(b'0')], |a| {
-            let (line, _) = a.buf.position();
+            let line = a.buf.position().line();
             a.buf.set_position(line, 0);
         });
         self.add_keymap(mode, [I::Char(b'$')], |a| {
-            let (line, _) = a.buf.position();
+            let line = a.buf.position().line();
             let last = a.buf.get_row(line).unwrap_or("").len();
             a.buf.set_position(line, last);
         });
         self.add_keymap(mode, [I::Char(b'y'), I::Char(b'y')], |a| {
-            let (line, _) = a.buf.position();
+            let line = a.buf.position().line();
             let line = a.buf.get_row(line).unwrap_or("").to_owned();
             a.state.registers.set_register('"', line);
         });
         self.add_keymap(mode, [I::Char(b'd'), I::Char(b'd')], |a| {
-            let (line, _) = a.buf.position();
+            let line = a.buf.position().line();
             let content = a.buf.remove_line(line);
             a.state.registers.set_register('"', content);
         });
         self.add_keymap(mode, [I::Char(b'p')], |a| {
-            let (line, ..) = a.buf.position();
+            let line = a.buf.position().line();
             let content = a.buf.get_row(line).unwrap_or("");
             a.buf.set_position(line, content.len());
             a.buf.add_newline();
@@ -299,25 +305,16 @@ impl Vim {
             a.buf.set_position(line + 1, 0);
         });
         self.add_keymap(mode, [I::Char(b'w')], |a| {
-            let (line, col) = a.buf.position();
-            let Some(row) = a.buf.get_row(line) else {
-                return;
-            };
-            #[allow(clippy::skip_while_next)]
-            let new_col = row
-                .chars()
-                .enumerate()
-                .skip(col)
-                .skip_while(|(_, ch)| ch.is_alphanumeric())
-                .skip_while(|(_, ch)| !ch.is_alphanumeric())
-                .next()
-                .map(|x| x.0)
-                .unwrap_or_else(|| row.chars().count());
-            debug!("next word starts at {new_col}");
-            a.buf.set_position(line, new_col);
+            let motion = motion::Word;
+            if let Some(next_pos) = motion.next(a.buf) {
+                a.buf.set_position(next_pos.line(), next_pos.col());
+            }
         });
-        self.add_keymap(mode, [I::Char(b'd'), Input::Char(b'w')], |_| {
-            debug!("delete word");
+        self.configure_motions(&[I::Char(b'd')], |_a, start, end| {
+            debug!("delete {start:?} -> {end:?}");
+        });
+        self.configure_motions(&[I::Char(b'y')], |_a, start, end| {
+            debug!("yank {start:?} -> {end:?}");
         });
         self.add_keymap(mode, [I::Char(b':')], |a| {
             a.state.mode = ModeState::Command {
@@ -325,6 +322,33 @@ impl Vim {
             }
         });
         self.configure_arrow_keys(mode);
+    }
+
+    fn configure_motion<F>(
+        &mut self,
+        prefix: &[Input],
+        suffix: impl IntoIterator<Item = Input>,
+        motion: impl Motion + 'static,
+        f: F,
+    ) where
+        F: Fn(MapArgs, Location, Location) + 'static,
+    {
+        let mode = Mode::Normal;
+        self.add_keymap(mode, prefix.iter().copied().chain(suffix), move |a| {
+            let start = a.buf.position();
+            let Some(end) = motion.next(a.buf) else {
+                return;
+            };
+            f(a, start, end)
+        });
+    }
+
+    fn configure_motions<F>(&mut self, prefix: &[Input], f: F)
+    where
+        F: Fn(MapArgs, Location, Location) + 'static,
+    {
+        use Input as I;
+        self.configure_motion(prefix, [I::Char(b'w')], Word, f);
     }
 
     fn configure_insert_mode(&mut self) {
@@ -377,23 +401,28 @@ impl VimState {
     fn execute_cmd(&mut self, buf: &mut Buffer) {
         let mut mode = std::mem::take(&mut self.mode);
         let cmdline = mode.expect_command();
+        fn write(buf: &mut Buffer) {
+            let Some(path) = buf.path() else {
+                return;
+            };
+            let path = path.to_owned();
+            buf.scrub();
+            let s = buf.save();
+            std::fs::write(path, &s).expect("cant write");
+        }
+        fn quit(state: &mut VimState) {
+            state.quit = true;
+        }
         // TODO: implement vimL?
         match cmdline.trim() {
+            "wq" | "wqa" => {
+                write(buf);
+                quit(self);
+            }
             "w" => {
-                let Some(path) = buf.path() else {
-                    return;
-                };
-                let path = path.to_owned();
-                buf.scrub();
-                let s = buf.save();
-                std::fs::write(path, &s).expect("cant write");
+                write(buf);
             }
-            "q" => {
-                self.quit = true;
-            }
-            "q!" => {
-                self.quit = true;
-            }
+            "qa" | "qa!" | "q" | "q!" => quit(self),
             s if let Some(filename) = s.strip_prefix("f ") => {
                 buf.set_path(filename.to_owned());
                 buf.set_name(filename.to_owned());
@@ -429,6 +458,8 @@ impl RegisterFile {
 #[cfg(test)]
 mod tests {
     use std::{cell::Cell, rc::Rc};
+
+    use crate::location::Location;
 
     use super::*;
 
@@ -527,7 +558,7 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello world");
         vim.handle_input(&mut buf, Input::Char(b'l')).no_break();
-        assert_eq!(buf.position(), (0, 1));
+        assert_eq!(buf.position(), (0, 1).into());
         vim.handle_input(&mut buf, Input::Char(b'i')).no_break();
         assert_eq!(vim.mode(), Mode::Insert);
         vim.handle_input(&mut buf, Input::Char(b' ')).no_break();
@@ -551,13 +582,13 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
         feedkeys(&mut vim, &mut buf, "llj").no_break();
-        assert_eq!(buf.position(), (1, 2));
+        assert_eq!(buf.position(), Location::new(1, 2));
         feedkeys(&mut vim, &mut buf, "k").no_break();
-        assert_eq!(buf.position(), (0, 2));
+        assert_eq!(buf.position(), Location::new(0, 2));
         feedkeys(&mut vim, &mut buf, "h").no_break();
-        assert_eq!(buf.position(), (0, 1));
+        assert_eq!(buf.position(), Location::new(0, 1));
         feedkeys(&mut vim, &mut buf, "lllllll").no_break();
-        assert_eq!(buf.position(), (0, 5));
+        assert_eq!(buf.position(), Location::new(0, 5));
     }
 
     #[test]
@@ -566,7 +597,7 @@ mod tests {
         let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
         feedkeys(&mut vim, &mut buf, "yyjp").no_break();
         assert_eq!(buf.save(), "hello\nworld\nhello\nfoo\nbar\n");
-        assert_eq!(buf.position(), (2, 0));
+        assert_eq!(buf.position(), Location::new(2, 0));
     }
 
     #[test]
@@ -574,9 +605,9 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello  world");
         feedkeys(&mut vim, &mut buf, "w").no_break();
-        assert_eq!(buf.position(), (0, 7));
+        assert_eq!(buf.position(), Location::new(0, 7));
         feedkeys(&mut vim, &mut buf, "w").no_break();
-        assert_eq!(buf.position(), (0, 12));
+        assert_eq!(buf.position(), Location::new(0, 12));
     }
 
     #[test]
@@ -585,13 +616,13 @@ mod tests {
         let (_f, mut buf) = buffer("hello  world");
         feedkeys(&mut vim, &mut buf, "o").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.position(), (1, 0));
+        assert_eq!(buf.position(), Location::new(1, 0));
         assert_eq!(buf.save(), "hello  world\n\n");
 
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("");
         feedkeys(&mut vim, &mut buf, "o").no_break();
-        assert_eq!(buf.position(), (1, 0));
+        assert_eq!(buf.position(), Location::new(1, 0));
     }
 
     #[test]
@@ -600,7 +631,7 @@ mod tests {
         let (_f, mut buf) = buffer("helloworld");
         feedkeys(&mut vim, &mut buf, "llllli\n").no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        assert_eq!(buf.position(), (1, 0));
+        assert_eq!(buf.position(), Location::new(1, 0));
         assert_eq!(buf.save(), "hello\nworld\n");
     }
 
@@ -624,15 +655,15 @@ mod tests {
     fn page_up_down() {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello\nworld\nfoo");
-        let (before, _) = buf.position();
+        let before = buf.position().line();
         vim.handle_input(&mut buf, Input::Char(ctrl_key(b'd')))
             .no_break();
-        let (after, _) = buf.position();
+        let after = buf.position().line();
         assert!(before < after);
 
         vim.handle_input(&mut buf, Input::Char(ctrl_key(b'u')))
             .no_break();
-        let (last, _) = buf.position();
+        let last = buf.position().line();
         assert!(after > last);
     }
 }

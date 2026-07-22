@@ -18,6 +18,8 @@ use crate::{
 
 mod buffer;
 mod get_input;
+pub mod location;
+pub mod motion;
 pub mod trie;
 mod vim;
 
@@ -182,7 +184,7 @@ fn draw_status_bar(conf: &mut EditorConfig) {
 
     let mut buf = [0u8; 16];
 
-    let (cur_line, cur_col) = conf.buf.position();
+    let (cur_line, cur_col) = conf.buf.position().destruct();
     let _ = write!(&mut buf[..], "{}:{}", cur_line + 1, cur_col + 1);
     let pre = buf
         .iter()
