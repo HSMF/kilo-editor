@@ -307,8 +307,13 @@ impl Vim {
                 a.buf.set_position(line, content.len());
                 a.buf.add_newline();
             }
+            // TODO: use `set_range` API instead
             for ch in reg.chars() {
-                a.buf.insert_char(ch);
+                if ch == '\n' {
+                    a.buf.add_newline();
+                } else {
+                    a.buf.insert_char(ch);
+                }
             }
             if reg.yanked_linewise {
                 a.buf.set_position(line + 1, 0);
@@ -319,8 +324,11 @@ impl Vim {
         self.configure_simple_motion([I::Char(b'b')], motion::Back::new());
         self.configure_simple_motion([I::Char(b'B')], motion::BigBack::new());
         self.configure_motions(&[I::Char(b'd')], |a, start, end| {
+            debug!("delete {start:?} {end:?}");
             let s = join_iter(a.buf.get_range(start, end));
-            debug!("delete {start:?} -> {end:?}");
+            debug!("here: {}", line!());
+            a.buf.delete_range(start, end);
+            a.state.registers.set_register('"', s, false);
         });
         self.configure_motions(&[I::Char(b'y')], |a, mut start, mut end| {
             if end < start {
