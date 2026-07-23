@@ -340,7 +340,6 @@ impl Vim {
             let s = join_iter(a.buf.get_range(start, end));
             a.buf.delete_range(start, end);
             a.state.registers.set_register('"', s, false);
-            a.buf.set_position(start.line(), start.col());
         });
         self.configure_motions(&[I::Char(b'y')], |a, start, end| {
             let (start, end) = sort_location(start, end);

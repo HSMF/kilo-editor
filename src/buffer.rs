@@ -432,13 +432,13 @@ impl Buffer {
 
             row.recompute_rendered();
 
-            if end.line() == start.line() + 1 {
-                return;
-            }
-
-            start.line() + 1..end.line() - 1
+            start.line() + 1..end.line()
         };
         self.row.drain(range);
+
+        if start <= self.position() && self.position() <= end {
+            self.set_position(start.line(), start.col());
+        }
     }
 
     /// lines inclusive, columns exclusive
@@ -865,7 +865,7 @@ mod tests {
     macro_rules! delete_range_tests {
         (
             $(
-                $name:ident: $buf:expr, $start:expr, $end:expr, $expected:expr
+                $name:ident: $buf:literal @ $cursor:expr, $start:expr, $end:expr, $expected:expr, $expected_cursor:expr
             )*
         ) =>{
 
@@ -874,11 +874,14 @@ mod tests {
                 #[test]
                 fn $name() {
                     let mut buffer = new_buf($buf);
+                    let c = $cursor;
+                    buffer.set_position(c.0, c.1);
                     buffer.delete_range($start.into(), $end.into());
                     assert_eq!(
                         buffer.save(),
                         $expected
-                    )
+                    );
+                    assert_eq!(buffer.position(), $expected_cursor.into());
                 }
             )*
         };
@@ -893,9 +896,11 @@ mod tests {
     }
 
     delete_range_tests! {
-        delete_in_single_line: "hello world", (0, 2), (0, 6), "heworld\n"
-        delete_in_two_lines: "hello\n world", (0, 2), (1, 1), "heworld\n"
-        delete_range_crash: ".\n\nuse anyhow::anyhow;", (2, 4), (2, 10), ".\n\nuse ::anyhow;\n"
-        delete_empty_range: "hello world", (0, 1), (0, 1), "hello world\n"
+        delete_in_single_line: "hello world" @ (0,0), (0, 2), (0, 6), "heworld\n", (0,0)
+        delete_in_two_lines: "hello\n world" @ (0,0), (0, 2), (1, 1), "heworld\n", (0,0)
+        delete_range_crash: ".\n\nuse anyhow::anyhow;" @ (0,0), (2, 4), (2, 10), ".\n\nuse ::anyhow;\n", (0,0)
+        delete_empty_range: "hello world" @ (0,0), (0, 1), (0, 1), "hello world\n", (0,0)
+        delete_with_cursor_inside_range: "hello world" @ (0, 2), (0, 1), (0, 3), "hlo world\n", (0, 1)
+        delete_with_cursor_inside_range_multiline: "foo\nbar\nbaz" @ (1, 1), (0, 1), (2, 1), "faz\n", (0, 1)
     }
 }
