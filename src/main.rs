@@ -115,7 +115,7 @@ pub enum CursorDirection {
 pub enum Input {
     #[default]
     Escape,
-    Char(u8),
+    Char(char),
     Arrow(CursorDirection),
     Enter,
     Backspace,

@@ -1,6 +1,8 @@
+use core::str;
 use std::io::Read as _;
 
-use tinyvec::ArrayVec;
+use log::error;
+use tinyvec::{ArrayVec, array_vec};
 
 use crate::{CursorDirection, Input};
 
@@ -53,9 +55,89 @@ impl SeqMode {
     }
 }
 
+#[derive(Debug)]
+struct Utf8Encoder {
+    /// set by first byte, how many continuation bytes we expect
+    expected_len: usize,
+    buf: ArrayVec<[u8; 4]>,
+}
+
+pub struct Utf8Error;
+
+impl Utf8Encoder {
+    fn new() -> Self {
+        Self {
+            expected_len: 0,
+            buf: array_vec!(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.expected_len = 0;
+        self.buf.clear();
+    }
+
+    fn push(&mut self, ch: u8) -> Result<Option<char>, Utf8Error> {
+        eprintln!("{ch:02x} {ch:08b}");
+        match ch {
+            0..=0b0111_1111 => {
+                if self.expected_len == 0 {
+                    Ok(Some(ch as char))
+                } else {
+                    Err(Utf8Error)
+                }
+            }
+            0b1100_0000..=0b1101_1111 => {
+                // two-byte codepoint
+                if self.expected_len == 0 {
+                    self.buf.clear();
+                    self.expected_len = 1;
+                    self.buf.push(ch);
+                    Ok(None)
+                } else {
+                    Err(Utf8Error)
+                }
+            }
+            0b1110_0000..=0b1110_1111 => {
+                // three-byte codepoint
+                if self.expected_len == 0 {
+                    self.buf.clear();
+                    self.expected_len = 2;
+                    self.buf.push(ch);
+                    Ok(None)
+                } else {
+                    Err(Utf8Error)
+                }
+            }
+            0b1000_0000..=0b1011_1111 => {
+                if self.buf.len() > self.expected_len || self.expected_len == 0 {
+                    return Err(Utf8Error);
+                }
+
+                self.buf.push(ch);
+
+                if self.buf.len() == self.expected_len + 1 {
+                    let ret = str::from_utf8(&self.buf)
+                        .map_err(|_| Utf8Error)?
+                        .chars()
+                        .next()
+                        .map(Some)
+                        .ok_or(Utf8Error);
+                    self.reset();
+                    ret
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Err(Utf8Error),
+        }
+    }
+}
+
 pub struct GetChar<Src> {
     seq: SeqMode,
     src: Src,
+    enc: Utf8Encoder,
 }
 
 impl<Src> GetChar<Src>
@@ -66,14 +148,32 @@ where
         Self {
             seq: SeqMode::Waiting,
             src,
+            enc: Utf8Encoder::new(),
         }
     }
 
-    fn map(x: u8) -> Input {
+    pub fn emit_char(&mut self, ch: u8) -> Option<Input> {
+        let x = ch;
         match x {
-            127 => Input::Backspace,
-            b'\r' | b'\n' => Input::Enter,
-            _ => Input::Char(x),
+            127 => {
+                self.enc.reset();
+                return Some(Input::Backspace);
+            }
+            b'\r' | b'\n' => {
+                self.enc.reset();
+                return Some(Input::Enter);
+            }
+            _ => {}
+        }
+
+        match self.enc.push(ch) {
+            Ok(Some(ch)) => Some(Input::Char(ch)),
+            Ok(None) => None,
+            Err(_) => {
+                error!("got invalid utf-8: {:?} {ch:?}", self.enc);
+                self.enc.reset();
+                None
+            }
         }
     }
 
@@ -85,7 +185,7 @@ where
             } else {
                 self.seq = SeqMode::Drain(v);
             }
-            return Some(Self::map(ret));
+            return self.emit_char(ret);
         }
         let Some(ch) = self.src.get_char() else {
             if let SeqMode::Fill(av) = self.seq {
@@ -141,12 +241,14 @@ where
             return None;
         }
 
-        Some(Self::map(ch))
+        self.emit_char(ch)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use Input as I;
+    use Input::Char as C;
     use std::collections::VecDeque;
 
     use super::*;
@@ -191,7 +293,7 @@ mod tests {
         }
     }
 
-    fn poll(getch: &mut GetChar<MockInput>, n: usize) -> Vec<Input> {
+    fn poll(getch: &mut GetChar<MockInput>, n: usize) -> Vec<I> {
         let mut ret = vec![];
         for _ in 0..n {
             if let Some(ch) = getch.getch() {
@@ -214,17 +316,17 @@ mod tests {
         assert_eq!(
             x,
             vec![
-                Input::Char(b'h'),
-                Input::Char(b'e'),
-                Input::Char(b'l'),
-                Input::Char(b'l'),
-                Input::Char(b'o'),
-                Input::Char(b' '),
-                Input::Char(b'w'),
-                Input::Char(b'o'),
-                Input::Char(b'r'),
-                Input::Char(b'l'),
-                Input::Char(b'd'),
+                I::Char('h'),
+                I::Char('e'),
+                I::Char('l'),
+                I::Char('l'),
+                I::Char('o'),
+                I::Char(' '),
+                I::Char('w'),
+                I::Char('o'),
+                I::Char('r'),
+                I::Char('l'),
+                I::Char('d'),
             ]
         );
     }
@@ -238,12 +340,12 @@ mod tests {
         assert_eq!(
             x,
             vec![
-                Input::Char(b'h'),
-                Input::Char(b'e'),
-                Input::Char(b'l'),
-                Input::Char(b'l'),
-                Input::Char(b'o'),
-                Input::Arrow(CursorDirection::Left)
+                I::Char('h'),
+                I::Char('e'),
+                I::Char('l'),
+                I::Char('l'),
+                I::Char('o'),
+                I::Arrow(CursorDirection::Left)
             ]
         );
     }
@@ -254,10 +356,7 @@ mod tests {
         let mut gc = GetChar::new(i);
 
         let x = poll(&mut gc, 20);
-        assert_eq!(
-            x,
-            vec![Input::Char(b'\x1b'), Input::Char(b'['), Input::Char(b',')]
-        );
+        assert_eq!(x, vec![I::Char('\x1b'), I::Char('['), I::Char(',')]);
     }
 
     #[test]
@@ -269,19 +368,19 @@ mod tests {
         assert_eq!(
             x,
             vec![
-                Input::Char(b'\x1b'),
-                Input::Char(b'['),
-                Input::Char(b','),
-                Input::Char(b'1'),
-                Input::Char(b'2'),
-                Input::Char(b'3'),
-                Input::Char(b'4'),
-                Input::Char(b'5'),
-                Input::Char(b'6'),
-                Input::Char(b'7'),
-                Input::Char(b'8'),
-                Input::Char(b'9'),
-                Input::Char(b'0'),
+                I::Char('\x1b'),
+                I::Char('['),
+                I::Char(','),
+                I::Char('1'),
+                I::Char('2'),
+                I::Char('3'),
+                I::Char('4'),
+                I::Char('5'),
+                I::Char('6'),
+                I::Char('7'),
+                I::Char('8'),
+                I::Char('9'),
+                I::Char('0'),
             ]
         );
     }
@@ -292,7 +391,7 @@ mod tests {
         let mut gc = GetChar::new(i);
 
         let x = poll(&mut gc, 20);
-        assert_eq!(x, vec![Input::Char(b'h'), Input::Backspace]);
+        assert_eq!(x, vec![I::Char('h'), I::Backspace]);
     }
 
     #[test]
@@ -301,7 +400,7 @@ mod tests {
         let mut gc = GetChar::new(i);
 
         let x = poll(&mut gc, 20);
-        assert_eq!(x, vec![Input::Char(b'h'), Input::Enter]);
+        assert_eq!(x, vec![I::Char('h'), I::Enter]);
     }
 
     #[test]
@@ -310,7 +409,7 @@ mod tests {
         let mut gc = GetChar::new(i);
 
         let x = poll(&mut gc, 20);
-        assert_eq!(x, vec![Input::Escape]);
+        assert_eq!(x, vec![I::Escape]);
     }
 
     #[test]
@@ -322,10 +421,10 @@ mod tests {
         assert_eq!(
             x,
             vec![
-                Input::Arrow(CursorDirection::Up),
-                Input::Arrow(CursorDirection::Right),
-                Input::Arrow(CursorDirection::Down),
-                Input::Arrow(CursorDirection::Left),
+                I::Arrow(CursorDirection::Up),
+                I::Arrow(CursorDirection::Right),
+                I::Arrow(CursorDirection::Down),
+                I::Arrow(CursorDirection::Left),
             ]
         );
     }
@@ -336,6 +435,34 @@ mod tests {
         let mut gc = GetChar::new(i);
 
         let x = poll(&mut gc, 20);
-        assert_eq!(x, vec![Input::PageUp, Input::PageDown]);
+        assert_eq!(x, vec![I::PageUp, I::PageDown]);
+    }
+
+    #[test]
+    fn get_utf8() {
+        let i = MockInput::new().chars("äaöoüu");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, [C('ä'), C('a'), C('ö'), C('o'), C('ü'), C('u'),]);
+    }
+
+    #[test]
+    fn get_utf8_with_pause() {
+        let c = "ü".as_bytes();
+        let i = MockInput::new().char(c[0]).pause().char(c[1]);
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, [C('ü')]);
+    }
+
+    #[test]
+    fn three_byte_utf8() {
+        let i = MockInput::new().chars("hi桁");
+        let mut gc = GetChar::new(i);
+
+        let x = poll(&mut gc, 20);
+        assert_eq!(x, [C('h'), C('i'), C('桁')]);
     }
 }

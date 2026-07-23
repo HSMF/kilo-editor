@@ -183,7 +183,7 @@ impl Vim {
 
     pub fn fallback_insert(&mut self, buf: &mut Buffer, ch: Input) {
         match ch {
-            Input::Char(ch) => buf.insert_char(ch as char),
+            Input::Char(ch) => buf.insert_char(ch),
             _ => warn!("unhandled char {ch:?}"),
         }
     }
@@ -226,7 +226,7 @@ impl Vim {
                 command_keymaps,
                 fallback = {
                     match ch {
-                        Input::Char(ch) => cmdline.push(ch as char),
+                        Input::Char(ch) => cmdline.push(ch),
                         _ => todo!(),
                     }
                 }
@@ -252,34 +252,34 @@ impl Vim {
         use CursorDirection as C;
         use Input as I;
         self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
-        self.add_keymap(mode, [I::Char(ctrl_key(b'u'))], |a| {
+        self.add_keymap(mode, [I::Char(ctrl_key(b'u') as char)], |a| {
             for _ in 0..12 {
                 a.buf.move_cursor(C::Up)
             }
         });
-        self.add_keymap(mode, [I::Char(ctrl_key(b'd'))], |a| {
+        self.add_keymap(mode, [I::Char(ctrl_key(b'd') as char)], |a| {
             for _ in 0..12 {
                 a.buf.move_cursor(C::Down)
             }
         });
-        self.add_keymap(mode, [I::Char(b'h')], |a| a.buf.move_cursor(C::Left));
-        self.add_keymap(mode, [I::Char(b'j')], |a| a.buf.move_cursor(C::Down));
-        self.add_keymap(mode, [I::Char(b'k')], |a| a.buf.move_cursor(C::Up));
-        self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
-        self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = ModeState::Insert);
-        self.add_keymap(mode, [I::Char(b'v')], |a| a.state.mode = ModeState::Visual);
-        self.add_keymap(mode, [I::Char(b'g'), I::Char(b'g')], |a| {
+        self.add_keymap(mode, [I::Char('h')], |a| a.buf.move_cursor(C::Left));
+        self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
+        self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
+        self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
+        self.add_keymap(mode, [I::Char('i')], |a| a.state.mode = ModeState::Insert);
+        self.add_keymap(mode, [I::Char('v')], |a| a.state.mode = ModeState::Visual);
+        self.add_keymap(mode, [I::Char('g'), I::Char('g')], |a| {
             buf_seek_line(a.buf, 0)
         });
-        self.add_keymap(mode, [I::Char(b'G')], |a| {
+        self.add_keymap(mode, [I::Char('G')], |a| {
             buf_seek_line(a.buf, a.buf.num_lines())
         });
-        self.add_keymap(mode, [I::Char(b'a')], |a| {
+        self.add_keymap(mode, [I::Char('a')], |a| {
             let (line, col) = a.buf.position().destruct();
             a.buf.set_position(line, col + 1);
             a.state.mode = ModeState::Insert
         });
-        self.add_keymap(mode, [I::Char(b'o')], |a| {
+        self.add_keymap(mode, [I::Char('o')], |a| {
             let line = a.buf.position().line();
             if let Some(row) = a.buf.get_row(line) {
                 a.buf.set_position(line, row.chars().count());
@@ -287,26 +287,26 @@ impl Vim {
             a.buf.add_newline();
             a.state.mode = ModeState::Insert
         });
-        self.add_keymap(mode, [I::Char(b'0')], |a| {
+        self.add_keymap(mode, [I::Char('0')], |a| {
             let line = a.buf.position().line();
             a.buf.set_position(line, 0);
         });
-        self.add_keymap(mode, [I::Char(b'$')], |a| {
+        self.add_keymap(mode, [I::Char('$')], |a| {
             let line = a.buf.position().line();
             let last = a.buf.get_row(line).unwrap_or("").len();
             a.buf.set_position(line, last);
         });
-        self.add_keymap(mode, [I::Char(b'y'), I::Char(b'y')], |a| {
+        self.add_keymap(mode, [I::Char('y'), I::Char('y')], |a| {
             let line = a.buf.position().line();
             let line = a.buf.get_row(line).unwrap_or("").to_owned();
             a.state.registers.set_register('"', line, true);
         });
-        self.add_keymap(mode, [I::Char(b'd'), I::Char(b'd')], |a| {
+        self.add_keymap(mode, [I::Char('d'), I::Char('d')], |a| {
             let line = a.buf.position().line();
             let content = a.buf.remove_line(line);
             a.state.registers.set_register('"', content, true);
         });
-        self.add_keymap(mode, [I::Char(b'p')], |a| {
+        self.add_keymap(mode, [I::Char('p')], |a| {
             // TODO: not quite correct
             let line = a.buf.position().line();
             let content = a.buf.get_row(line).unwrap_or("");
@@ -327,10 +327,10 @@ impl Vim {
                 a.buf.set_position(line + 1, 0);
             }
         });
-        self.configure_simple_motion([I::Char(b'w')], motion::Word::new());
-        self.configure_simple_motion([I::Char(b'W')], motion::BigWord::new());
-        self.configure_simple_motion([I::Char(b'b')], motion::Back::new());
-        self.configure_simple_motion([I::Char(b'B')], motion::BigBack::new());
+        self.configure_simple_motion([I::Char('w')], motion::Word::new());
+        self.configure_simple_motion([I::Char('W')], motion::BigWord::new());
+        self.configure_simple_motion([I::Char('b')], motion::Back::new());
+        self.configure_simple_motion([I::Char('B')], motion::BigBack::new());
 
         fn sort_location(start: Location, end: Location) -> (Location, Location) {
             if end < start {
@@ -340,19 +340,19 @@ impl Vim {
             }
         }
 
-        self.configure_motions(&[I::Char(b'd')], |a, start, end| {
+        self.configure_motions(&[I::Char('d')], |a, start, end| {
             let (start, end) = sort_location(start, end);
             debug!("delete {start:?} {end:?}");
             let s = join_iter(a.buf.get_range(start, end));
             a.buf.delete_range(start, end);
             a.state.registers.set_register('"', s, false);
         });
-        self.configure_motions(&[I::Char(b'y')], |a, start, end| {
+        self.configure_motions(&[I::Char('y')], |a, start, end| {
             let (start, end) = sort_location(start, end);
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
         });
-        self.add_keymap(mode, [I::Char(b':')], |a| {
+        self.add_keymap(mode, [I::Char(':')], |a| {
             a.state.mode = ModeState::Command {
                 cmdline: String::new(),
             }
@@ -396,10 +396,10 @@ impl Vim {
         F: Fn(MapArgs, Location, Location) + 'static + Clone,
     {
         use Input as I;
-        self.configure_motion(prefix, [I::Char(b'w')], Word::new(), f.clone());
-        self.configure_motion(prefix, [I::Char(b'W')], BigWord::new(), f.clone());
-        self.configure_motion(prefix, [I::Char(b'b')], Back::new(), f.clone());
-        self.configure_motion(prefix, [I::Char(b'B')], BigBack::new(), f.clone());
+        self.configure_motion(prefix, [I::Char('w')], Word::new(), f.clone());
+        self.configure_motion(prefix, [I::Char('W')], BigWord::new(), f.clone());
+        self.configure_motion(prefix, [I::Char('b')], Back::new(), f.clone());
+        self.configure_motion(prefix, [I::Char('B')], BigBack::new(), f.clone());
     }
 
     fn configure_insert_mode(&mut self) {
@@ -447,10 +447,10 @@ impl Vim {
         self.configure_arrow_keys(mode);
         self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
         self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
-        self.add_keymap(mode, [I::Char(b'h')], |a| a.buf.move_cursor(C::Left));
-        self.add_keymap(mode, [I::Char(b'j')], |a| a.buf.move_cursor(C::Down));
-        self.add_keymap(mode, [I::Char(b'k')], |a| a.buf.move_cursor(C::Up));
-        self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
+        self.add_keymap(mode, [I::Char('h')], |a| a.buf.move_cursor(C::Left));
+        self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
+        self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
+        self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
     }
 }
 
@@ -559,16 +559,16 @@ mod tests {
         let y = Rc::clone(&x);
         v.add_keymap(
             Mode::Normal,
-            [Input::Char(b'a'), Input::Char(b'b')],
+            [Input::Char('a'), Input::Char('b')],
             move |_| x.set(1),
         );
 
         assert_eq!(y.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char(b'a'));
+        let _ = v.handle_input(&mut buf, Input::Char('a'));
         assert_eq!(y.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char(b'b'));
+        let _ = v.handle_input(&mut buf, Input::Char('b'));
 
         assert_eq!(y.get(), 1);
     }
@@ -582,20 +582,20 @@ mod tests {
         let z = Rc::clone(&x);
         v.add_keymap(
             Mode::Normal,
-            [Input::Char(b'a'), Input::Char(b'b')],
+            [Input::Char('a'), Input::Char('b')],
             move |_| y.set(1),
         );
-        v.add_keymap(Mode::Normal, [Input::Char(b'c')], move |_| z.set(2));
+        v.add_keymap(Mode::Normal, [Input::Char('c')], move |_| z.set(2));
 
         assert_eq!(x.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char(b'a'));
+        let _ = v.handle_input(&mut buf, Input::Char('a'));
         assert_eq!(x.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char(b'c'));
+        let _ = v.handle_input(&mut buf, Input::Char('c'));
         assert_eq!(x.get(), 0);
 
-        let _ = v.handle_input(&mut buf, Input::Char(b'c'));
+        let _ = v.handle_input(&mut buf, Input::Char('c'));
 
         assert_eq!(x.get(), 2);
     }
@@ -627,9 +627,9 @@ mod tests {
     }
 
     fn feedkeys(vim: &mut Vim, buf: &mut Buffer, keys: &str) -> ControlFlow<()> {
-        for ch in keys.bytes() {
+        for ch in keys.chars() {
             let ch = match ch {
-                b'\n' => Input::Enter,
+                '\n' => Input::Enter,
                 _ => {
                     assert!(ch.is_ascii());
                     assert!(!ch.is_ascii_control());
@@ -645,11 +645,11 @@ mod tests {
     fn insert_works() {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello world");
-        vim.handle_input(&mut buf, Input::Char(b'l')).no_break();
+        vim.handle_input(&mut buf, Input::Char('l')).no_break();
         assert_eq!(buf.position(), (0, 1).into());
-        vim.handle_input(&mut buf, Input::Char(b'i')).no_break();
+        vim.handle_input(&mut buf, Input::Char('i')).no_break();
         assert_eq!(vim.mode(), Mode::Insert);
-        vim.handle_input(&mut buf, Input::Char(b' ')).no_break();
+        vim.handle_input(&mut buf, Input::Char(' ')).no_break();
         assert_eq!(vim.mode(), Mode::Insert);
         assert_eq!(buf.save(), "h ello world\n");
     }
@@ -768,12 +768,12 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello\nworld\nfoo");
         let before = buf.position().line();
-        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'd')))
+        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'd') as char))
             .no_break();
         let after = buf.position().line();
         assert!(before < after);
 
-        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'u')))
+        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'u') as char))
             .no_break();
         let last = buf.position().line();
         assert!(after > last);
