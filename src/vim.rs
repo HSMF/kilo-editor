@@ -21,7 +21,7 @@ pub enum Mode {
     Command,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct RegisterEntry {
     value: String,
     yanked_linewise: bool,
@@ -140,6 +140,7 @@ impl Vim {
         ret.configure_normal_mode();
         ret.configure_insert_mode();
         ret.configure_command_mode();
+        ret.configure_visual_mode();
         ret
     }
 
@@ -231,7 +232,7 @@ impl Vim {
                 }
             ),
 
-            ModeState::Visual => todo!(),
+            ModeState::Visual => handle_mode!(self, visual_keymaps),
         }
         if self.state.quit {
             ControlFlow::Break(())
@@ -266,6 +267,7 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'k')], |a| a.buf.move_cursor(C::Up));
         self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
         self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = ModeState::Insert);
+        self.add_keymap(mode, [I::Char(b'v')], |a| a.state.mode = ModeState::Visual);
         self.add_keymap(mode, [I::Char(b'a')], |a| {
             let (line, col) = a.buf.position().destruct();
             a.buf.set_position(line, col + 1);
@@ -323,17 +325,25 @@ impl Vim {
         self.configure_simple_motion([I::Char(b'W')], motion::BigWord::new());
         self.configure_simple_motion([I::Char(b'b')], motion::Back::new());
         self.configure_simple_motion([I::Char(b'B')], motion::BigBack::new());
+
+        fn sort_location(start: Location, end: Location) -> (Location, Location) {
+            if end < start {
+                (end, start)
+            } else {
+                (start, end)
+            }
+        }
+
         self.configure_motions(&[I::Char(b'd')], |a, start, end| {
+            let (start, end) = sort_location(start, end);
             debug!("delete {start:?} {end:?}");
             let s = join_iter(a.buf.get_range(start, end));
-            debug!("here: {}", line!());
             a.buf.delete_range(start, end);
             a.state.registers.set_register('"', s, false);
+            a.buf.set_position(start.line(), start.col());
         });
-        self.configure_motions(&[I::Char(b'y')], |a, mut start, mut end| {
-            if end < start {
-                (end, start) = (start, end);
-            }
+        self.configure_motions(&[I::Char(b'y')], |a, start, end| {
+            let (start, end) = sort_location(start, end);
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
         });
@@ -422,6 +432,20 @@ impl Vim {
         for dir in [C::Left, C::Right, C::Up, C::Down] {
             self.add_keymap(mode, [I::Arrow(dir)], move |a| a.buf.move_cursor(dir));
         }
+    }
+
+    fn configure_visual_mode(&mut self) {
+        let mode = Mode::Visual;
+        use CursorDirection as C;
+        use Input as I;
+        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
+        self.configure_arrow_keys(mode);
+        self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
+        self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
+        self.add_keymap(mode, [I::Char(b'h')], |a| a.buf.move_cursor(C::Left));
+        self.add_keymap(mode, [I::Char(b'j')], |a| a.buf.move_cursor(C::Down));
+        self.add_keymap(mode, [I::Char(b'k')], |a| a.buf.move_cursor(C::Up));
+        self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
     }
 }
 
@@ -689,7 +713,21 @@ mod tests {
     fn quit_works() {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("helloworld");
-        feedkeys(&mut vim, &mut buf, ":q\n").breaks();
+        feedkeys(&mut vim, &mut buf, ":q").no_break();
+        feedkeys(&mut vim, &mut buf, "\n").breaks();
+    }
+
+    #[test]
+    fn command_mode() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("helloworld");
+        feedkeys(&mut vim, &mut buf, ":f").no_break();
+        assert_eq!(vim.command_str(), Some("f"));
+        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        assert_eq!(vim.command_str(), Some(""));
+        assert_eq!(vim.mode(), Mode::Command);
+        vim.handle_input(&mut buf, Input::Backspace).no_break();
+        assert_eq!(vim.mode(), Mode::Normal);
     }
 
     #[test]
@@ -697,6 +735,16 @@ mod tests {
         let mut vim = Vim::new();
         let (f, mut buf) = buffer("helloworld");
         feedkeys(&mut vim, &mut buf, ":w\n").no_break();
+        let s = std::io::read_to_string(f).unwrap();
+        assert_eq!(s, "helloworld\n");
+    }
+
+    #[test]
+    fn write_quit_works() {
+        let mut vim = Vim::new();
+        let (f, mut buf) = buffer("helloworld");
+        feedkeys(&mut vim, &mut buf, ":wq").no_break();
+        feedkeys(&mut vim, &mut buf, "\n").breaks();
         let s = std::io::read_to_string(f).unwrap();
         assert_eq!(s, "helloworld\n");
     }
@@ -715,5 +763,53 @@ mod tests {
             .no_break();
         let last = buf.position().line();
         assert!(after > last);
+    }
+
+    #[test]
+    fn yank() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "yw").no_break();
+        assert_eq!(
+            vim.state.registers.get_register('"'),
+            &RegisterEntry::new("hello ".into())
+        );
+        assert_eq!(buf.position(), Location::new(0, 0));
+    }
+
+    #[test]
+    fn delete() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "dw").no_break();
+        assert_eq!(
+            vim.state.registers.get_register('"'),
+            &RegisterEntry::new("hello ".into())
+        );
+        assert_eq!(buf.save(), "world\n");
+        assert_eq!(buf.position(), Location::new(0, 0));
+    }
+
+    #[test]
+    fn delete_back() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "lllldb").no_break();
+        assert_eq!(
+            vim.state.registers.get_register('"'),
+            &RegisterEntry::new("hell".into())
+        );
+        assert_eq!(buf.save(), "o world\n");
+        assert_eq!(buf.position(), Location::new(0, 0));
+    }
+
+    #[test]
+    fn end_of_line() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello world");
+        feedkeys(&mut vim, &mut buf, "$").no_break();
+        assert_eq!(buf.position(), Location::new(0, 11));
+        feedkeys(&mut vim, &mut buf, "0").no_break();
+        assert_eq!(buf.position(), Location::new(0, 0));
     }
 }
