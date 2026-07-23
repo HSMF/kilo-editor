@@ -306,6 +306,10 @@ impl Vim {
             let content = a.buf.remove_line(line);
             a.state.registers.set_register('"', content, true);
         });
+		self.add_keymap(mode, [I::Char('x')], |a| {
+			let pos = a.buf.position();
+			a.buf.delete_range(pos, Location::new(pos.line(), pos.col() + 1));
+		});
         self.add_keymap(mode, [I::Char('p')], |a| {
             // TODO: not quite correct
             let line = a.buf.position().line();
