@@ -268,6 +268,12 @@ impl Vim {
         self.add_keymap(mode, [I::Char(b'l')], |a| a.buf.move_cursor(C::Right));
         self.add_keymap(mode, [I::Char(b'i')], |a| a.state.mode = ModeState::Insert);
         self.add_keymap(mode, [I::Char(b'v')], |a| a.state.mode = ModeState::Visual);
+        self.add_keymap(mode, [I::Char(b'g'), I::Char(b'g')], |a| {
+            buf_seek_line(a.buf, 0)
+        });
+        self.add_keymap(mode, [I::Char(b'G')], |a| {
+            buf_seek_line(a.buf, a.buf.num_lines())
+        });
         self.add_keymap(mode, [I::Char(b'a')], |a| {
             let (line, col) = a.buf.position().destruct();
             a.buf.set_position(line, col + 1);
@@ -448,6 +454,11 @@ impl Vim {
     }
 }
 
+fn buf_seek_line(buf: &mut Buffer, line: usize) {
+    let cur = buf.position();
+    buf.set_position(line, cur.col());
+}
+
 impl VimState {
     pub fn new() -> Self {
         Self {
@@ -490,6 +501,10 @@ impl VimState {
                 let shell = env::var("SHELL").unwrap_or_else(|_| String::from("sh"));
                 let res = Command::new(shell).arg("-c").arg(command).output();
                 debug!("!{command} => {res:?}");
+            }
+            // :<num> => seek to line
+            s if let Ok(line) = s.parse::<usize>() => {
+                buf_seek_line(buf, line);
             }
             _ => debug!("TODO: notify that this command ({cmdline}) is unknown"),
         }

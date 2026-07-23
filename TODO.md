@@ -1,14 +1,14 @@
 ## keymaps (listed in order of me accidentally using them)
 
-- `zz`
-- `C`
-- `/`
-- `<C-O>`
-- `<C-I>`
-- `G`
-- `gg`
-- `r`
-- `x`
+- [ ] `zz`
+- [ ] `C`
+- [ ] `/`
+- [ ] `<C-O>`
+- [ ] `<C-I>`
+- [x] `G`
+- [x] `gg`
+- [ ] `r`
+- [ ] `x`
 
 ## options
 

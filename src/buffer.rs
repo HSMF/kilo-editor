@@ -331,7 +331,7 @@ impl Buffer {
 
     /// returns (line, col)
     pub fn set_position(&mut self, line: usize, col: usize) {
-        self.cur_line = line.clamp(0, self.row.len());
+        self.cur_line = line.clamp(0, self.row.len().saturating_sub(1));
         self.cur_col = col.clamp(0, self.row_len(self.cur_line));
     }
 
