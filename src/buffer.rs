@@ -411,10 +411,9 @@ impl Buffer {
     /// lines inclusive, columns exclusive
     // TODO: do we want to return the deleted text?
     pub fn delete_range(&mut self, start: Location, end: Location) {
-        assert!(start < end);
+        assert!(start <= end);
         let range = if start.line() == end.line() {
             let row = &mut self.row[start.line()];
-            dbg!(&row);
             row.content.drain(get_byte_range_from_char_range(
                 &row.content,
                 start.col(),
@@ -428,12 +427,10 @@ impl Buffer {
             row.content
                 .drain(char_idx_to_byte_idx(&row.content, start.col()).unwrap_or(0)..);
 
-            end_row
-                .drain(0..dbg!(char_idx_to_byte_idx(&end_row, end.col()).unwrap_or(end_row.len())));
+            end_row.drain(0..char_idx_to_byte_idx(&end_row, end.col()).unwrap_or(end_row.len()));
             row.content.push_str(&end_row);
 
             row.recompute_rendered();
-            dbg!(start, end);
 
             if end.line() == start.line() + 1 {
                 return;
@@ -899,5 +896,6 @@ mod tests {
         delete_in_single_line: "hello world", (0, 2), (0, 6), "heworld\n"
         delete_in_two_lines: "hello\n world", (0, 2), (1, 1), "heworld\n"
         delete_range_crash: ".\n\nuse anyhow::anyhow;", (2, 4), (2, 10), ".\n\nuse ::anyhow;\n"
+        delete_empty_range: "hello world", (0, 1), (0, 1), "hello world\n"
     }
 }
