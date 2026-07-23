@@ -8,9 +8,8 @@
 - [x] `G`
 - [x] `gg`
 - [ ] `r`
-- [ ] `x`
+- [x] `x`
 
 ## options
-
 
 - `expandtab` (sorry Qwendu)
