@@ -280,8 +280,8 @@ impl Vim {
         });
         self.add_keymap(mode, [I::Char('a')], |mut a| {
             let (line, col) = a.buf.position().destruct();
-            a.buf.set_position(line, col + 1);
             a.set_mode(ModeState::Insert);
+            a.buf.set_position(line, col + 1);
         });
         self.add_keymap(mode, [I::Char('o')], |mut a| {
             let line = a.buf.position().line();
@@ -681,6 +681,12 @@ mod tests {
         assert_eq!(vim.mode(), Mode::Insert);
         vim.handle_input(&mut buf, Input::Escape).no_break();
         assert_eq!(vim.mode(), Mode::Normal);
+
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("hello, world");
+        feedkeys(&mut vim, &mut buf, "$a!").no_break();
+        assert_eq!(vim.mode(), Mode::Insert);
+        assert_eq!(buf.save(), "hello, world!\n");
     }
 
     #[test]
