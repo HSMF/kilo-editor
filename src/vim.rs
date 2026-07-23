@@ -115,6 +115,10 @@ impl<'a> MapArgs<'a> {
     fn new(buf: &'a mut Buffer, state: &'a mut VimState) -> Self {
         Self { buf, state }
     }
+
+    fn set_mode(&mut self, mode: ModeState) {
+        self.state.set_mode(mode, self.buf);
+    }
 }
 
 enum LookupKeymap<'a> {
@@ -251,7 +255,7 @@ impl Vim {
         let mode = Mode::Normal;
         use CursorDirection as C;
         use Input as I;
-        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
+        self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.add_keymap(mode, [I::Char(ctrl_key(b'u') as char)], |a| {
             for _ in 0..12 {
                 a.buf.move_cursor(C::Up)
@@ -266,26 +270,25 @@ impl Vim {
         self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
         self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
         self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
-        self.add_keymap(mode, [I::Char('i')], |a| a.state.mode = ModeState::Insert);
-        self.add_keymap(mode, [I::Char('v')], |a| a.state.mode = ModeState::Visual);
+        self.add_keymap(mode, [I::Char('i')], |mut a| a.set_mode(ModeState::Insert));
+        self.add_keymap(mode, [I::Char('v')], |mut a| a.set_mode(ModeState::Visual));
         self.add_keymap(mode, [I::Char('g'), I::Char('g')], |a| {
             buf_seek_line(a.buf, 0)
         });
         self.add_keymap(mode, [I::Char('G')], |a| {
             buf_seek_line(a.buf, a.buf.num_lines())
         });
-        self.add_keymap(mode, [I::Char('a')], |a| {
+        self.add_keymap(mode, [I::Char('a')], |mut a| {
             let (line, col) = a.buf.position().destruct();
             a.buf.set_position(line, col + 1);
-            a.state.mode = ModeState::Insert
+            a.set_mode(ModeState::Insert);
         });
-        self.add_keymap(mode, [I::Char('o')], |a| {
+        self.add_keymap(mode, [I::Char('o')], |mut a| {
             let line = a.buf.position().line();
-            if let Some(row) = a.buf.get_row(line) {
-                a.buf.set_position(line, row.chars().count());
-            }
-            a.buf.add_newline();
-            a.state.mode = ModeState::Insert
+            a.buf.set_lines(line + 1, [""]);
+            a.buf.set_position(line + 1, 0);
+
+            a.set_mode(ModeState::Insert);
         });
         self.add_keymap(mode, [I::Char('0')], |a| {
             let line = a.buf.position().line();
@@ -306,18 +309,19 @@ impl Vim {
             let content = a.buf.remove_line(line);
             a.state.registers.set_register('"', content, true);
         });
-		self.add_keymap(mode, [I::Char('x')], |a| {
-			let pos = a.buf.position();
-			a.buf.delete_range(pos, Location::new(pos.line(), pos.col() + 1));
-		});
+        self.add_keymap(mode, [I::Char('x')], |a| {
+            let pos = a.buf.position();
+            a.buf
+                .delete_range(pos, Location::new(pos.line(), pos.col() + 1));
+        });
         self.add_keymap(mode, [I::Char('p')], |a| {
             // TODO: not quite correct
             let line = a.buf.position().line();
-            let content = a.buf.get_row(line).unwrap_or("");
             let reg = a.state.registers.get_register('"');
             if reg.yanked_linewise {
-                a.buf.set_position(line, content.len());
-                a.buf.add_newline();
+                a.buf.set_lines(line + 1, reg.value.lines());
+                a.buf.set_position(line + 1, 0);
+                return;
             }
             // TODO: use `set_range` API instead
             for ch in reg.chars() {
@@ -356,10 +360,10 @@ impl Vim {
             let s = join_iter(a.buf.get_range(start, end));
             a.state.registers.set_register('"', s, false);
         });
-        self.add_keymap(mode, [I::Char(':')], |a| {
-            a.state.mode = ModeState::Command {
+        self.add_keymap(mode, [I::Char(':')], |mut a| {
+            a.set_mode(ModeState::Command {
                 cmdline: String::new(),
-            }
+            })
         });
         self.configure_arrow_keys(mode);
     }
@@ -409,7 +413,7 @@ impl Vim {
     fn configure_insert_mode(&mut self) {
         let mode = Mode::Insert;
         use Input as I;
-        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
+        self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
         self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
         self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
@@ -419,12 +423,12 @@ impl Vim {
         let mode = Mode::Command;
         use Input as I;
 
-        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
+        self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.add_keymap(mode, [I::Enter], |a| a.state.execute_cmd(a.buf));
-        self.add_keymap(mode, [I::Backspace], |a| {
+        self.add_keymap(mode, [I::Backspace], |mut a| {
             let s = a.state.mode.expect_command();
             if s.pop().is_none() {
-                a.state.mode = ModeState::Normal;
+                a.set_mode(ModeState::Normal);
             }
         });
         {
@@ -447,7 +451,7 @@ impl Vim {
         let mode = Mode::Visual;
         use CursorDirection as C;
         use Input as I;
-        self.add_keymap(mode, [I::Escape], |a| a.state.mode = ModeState::Normal);
+        self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
         self.configure_arrow_keys(mode);
         self.add_keymap(mode, [I::Backspace], |a| a.buf.delete_char());
         self.add_keymap(mode, [I::Enter], |a| a.buf.add_newline());
@@ -512,6 +516,16 @@ impl VimState {
             }
             _ => debug!("TODO: notify that this command ({cmdline}) is unknown"),
         }
+    }
+
+    fn set_mode(&mut self, mode: ModeState, buf: &mut Buffer) {
+        match mode {
+            ModeState::Normal | ModeState::Visual | ModeState::Command { .. } => {
+                buf.set_go_past_end(false)
+            }
+            ModeState::Insert => buf.set_go_past_end(true),
+        }
+        self.mode = mode;
     }
 }
 
@@ -680,13 +694,14 @@ mod tests {
         feedkeys(&mut vim, &mut buf, "h").no_break();
         assert_eq!(buf.position(), Location::new(0, 1));
         feedkeys(&mut vim, &mut buf, "lllllll").no_break();
-        assert_eq!(buf.position(), Location::new(0, 5));
+        assert_eq!(buf.position(), Location::new(0, 4));
     }
 
     #[test]
     fn yank_works() {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello\nworld\nfoo\nbar");
+        assert_eq!(buf.position(), Location::new(0, 0));
         feedkeys(&mut vim, &mut buf, "yyjp").no_break();
         assert_eq!(buf.save(), "hello\nworld\nhello\nfoo\nbar\n");
         assert_eq!(buf.position(), Location::new(2, 0));
@@ -699,7 +714,7 @@ mod tests {
         feedkeys(&mut vim, &mut buf, "w").no_break();
         assert_eq!(buf.position(), Location::new(0, 7));
         feedkeys(&mut vim, &mut buf, "w").no_break();
-        assert_eq!(buf.position(), Location::new(0, 12));
+        assert_eq!(buf.position(), Location::new(0, 11));
     }
 
     #[test]
@@ -714,7 +729,7 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("");
         feedkeys(&mut vim, &mut buf, "o").no_break();
-        assert_eq!(buf.position(), Location::new(1, 0));
+        assert_eq!(buf.position(), Location::new(0, 0));
     }
 
     #[test]
@@ -826,7 +841,7 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello world");
         feedkeys(&mut vim, &mut buf, "$").no_break();
-        assert_eq!(buf.position(), Location::new(0, 11));
+        assert_eq!(buf.position(), Location::new(0, 10));
         feedkeys(&mut vim, &mut buf, "0").no_break();
         assert_eq!(buf.position(), Location::new(0, 0));
     }

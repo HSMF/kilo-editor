@@ -125,6 +125,8 @@ pub struct Buffer {
     cur_line: usize,
     cur_col: usize,
     dirty: bool,
+
+    allow_one_past: bool,
 }
 
 fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<usize> {
@@ -156,6 +158,7 @@ impl Buffer {
             name: String::new(),
             path: None,
             dirty: false,
+            allow_one_past: false,
         }
     }
 
@@ -170,7 +173,25 @@ impl Buffer {
             path: Some(name.clone()),
             name,
             dirty: false,
+            allow_one_past: false,
         }
+    }
+
+    /// sets whether it is allowed to be one past the end of the line
+    pub fn set_go_past_end(&mut self, allow: bool) {
+        self.allow_one_past = allow;
+        self.clamp_cursor();
+    }
+
+    fn clamp_cursor(&mut self) {
+        let limit = self.row_len(self.cur_line);
+        let limit = if self.allow_one_past {
+            limit
+        } else {
+            limit.saturating_sub(1)
+        };
+        self.cur_col = self.cur_col.clamp(0, limit);
+        self.cur_line = self.cur_line.clamp(0, self.row.len().saturating_sub(1))
     }
 
     /// mark as "not dirty"
@@ -304,14 +325,12 @@ impl Buffer {
 
         match c {
             C::Up => self.cur_line = self.cur_line.saturating_sub(1),
-            C::Down => {
-                self.cur_line = (self.cur_line + 1).clamp(0, self.row.len().saturating_sub(1))
-            }
+            C::Down => self.cur_line += 1,
             C::Left => self.cur_col = self.cur_col.saturating_sub(1),
             C::Right => self.cur_col += 1,
         }
 
-        self.cur_col = self.cur_col.clamp(0, self.row_len(self.cur_line));
+        self.clamp_cursor();
     }
 
     /// where to place the cursor (rows x cols coordinates)
@@ -331,8 +350,9 @@ impl Buffer {
 
     /// returns (line, col)
     pub fn set_position(&mut self, line: usize, col: usize) {
-        self.cur_line = line.clamp(0, self.row.len().saturating_sub(1));
-        self.cur_col = col.clamp(0, self.row_len(self.cur_line));
+        self.cur_line = line;
+        self.cur_col = col;
+        self.clamp_cursor();
     }
 
     pub fn insert_char(&mut self, ch: char) {
@@ -449,6 +469,34 @@ impl Buffer {
     {
         todo!("set range {start:?} {end:?}")
     }
+
+    /// insert `lines` before `start`
+    pub fn set_lines<I, S>(&mut self, start: usize, lines: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        if start > self.row.len() {
+            self.row
+                .extend(lines.into_iter().map(Into::into).map(Row::new));
+            return;
+        }
+        let lines = lines.into_iter();
+        let mut row = Vec::with_capacity(self.row.len() + lines.size_hint().0);
+
+        for r in self.row.drain(..start) {
+            row.push(r);
+        }
+
+        for l in lines {
+            row.push(Row::new(l.into()));
+        }
+
+        std::mem::swap(&mut self.row, &mut row);
+        for r in row {
+            self.row.push(r);
+        }
+    }
 }
 
 pub struct RangeIter<'a> {
@@ -505,6 +553,7 @@ mod tests {
                 col_off: 0,
                 cur_line: 0,
                 cur_col: 0,
+                allow_one_past: false
             }
         );
     }
@@ -555,6 +604,7 @@ mod tests {
              blah
              "#,
         );
+        buf.set_go_past_end(true);
 
         enact(
             &mut buf,
@@ -586,6 +636,7 @@ mod tests {
                 line 5
                 "#,
         );
+        buf.set_go_past_end(true);
 
         enact(
             &mut buf,
@@ -615,6 +666,7 @@ mod tests {
             line 2
             "#,
         );
+        buf.set_go_past_end(true);
 
         for _ in 0..11 {
             buf.move_cursor(C::Right);
@@ -635,6 +687,7 @@ mod tests {
             line 2
             "#,
         );
+        buf.set_go_past_end(true);
 
         for _ in 0..11 {
             buf.move_cursor(C::Right);
@@ -668,6 +721,7 @@ mod tests {
         let rows = 24;
         let cols = 80;
         let mut buf = new_buf("this");
+        buf.set_go_past_end(true);
         enact(
             &mut buf,
             rows,
@@ -688,6 +742,7 @@ mod tests {
         let rows = 24;
         let cols = 3;
         let mut buf = new_buf("this");
+        buf.set_go_past_end(true);
         enact(
             &mut buf,
             rows,
@@ -799,6 +854,7 @@ mod tests {
             }
             ",
         );
+        buf.set_go_past_end(true);
         for i in 0..13 {
             buf.move_cursor(C::Right);
             print_cursor(&mut buf, rows, cols);
@@ -887,6 +943,27 @@ mod tests {
         };
     }
 
+    macro_rules! set_lines_tests {
+        ($(
+            $name:ident: $buf:literal, $line:expr, $lines:expr, $expected:expr
+        )*) => {
+            $(
+
+                #[test]
+                fn $name() {
+                    let mut buffer = new_buf($buf);
+                    buffer.set_lines($line, $lines);
+                    assert_eq!(
+                        buffer.save(),
+                        $expected
+                    )
+
+                }
+
+            )*
+        };
+    }
+
     get_range_tests! {
         get_full_range: "hello\n\nworld", (0,0), (2,5), ["hello", "", "world"]
         get_almost_full_range: "hello\n\nworld", (0,0), (2,4), ["hello", "", "worl"]
@@ -902,5 +979,10 @@ mod tests {
         delete_empty_range: "hello world" @ (0,0), (0, 1), (0, 1), "hello world\n", (0,0)
         delete_with_cursor_inside_range: "hello world" @ (0, 2), (0, 1), (0, 3), "hlo world\n", (0, 1)
         delete_with_cursor_inside_range_multiline: "foo\nbar\nbaz" @ (1, 1), (0, 1), (2, 1), "faz\n", (0, 1)
+    }
+
+    set_lines_tests! {
+        set_lines_empty: "hello world", 0, Vec::<&str>::new(), "hello world\n"
+        set_lines_empty_buf: "", 1, ["hello world"], "hello world\n"
     }
 }
