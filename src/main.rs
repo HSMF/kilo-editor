@@ -155,9 +155,11 @@ fn refresh_screen(conf: &mut EditorConfig) {
     draw_rows(conf);
     draw_status_bar(conf);
 
-    if let Some(commandline) = conf.v.command_str() {
+    if let Some((action, commandline)) = conf.v.command_str() {
         conf.out_buf.extend_from_slice(b"\r\n\x1b[2K");
-        conf.out_buf.extend_from_slice(b":");
+        let mut buf = [0; 4];
+        conf.out_buf
+            .extend_from_slice(action.encode_utf8(&mut buf).as_bytes());
         conf.out_buf.extend_from_slice(commandline.as_bytes());
     } else {
         let (cy, cx) = conf.buf.cursor(conf.rows, conf.cols);

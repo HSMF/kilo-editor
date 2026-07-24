@@ -129,7 +129,7 @@ pub struct Buffer {
     allow_one_past: bool,
 }
 
-fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<usize> {
+pub(crate) fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<usize> {
     let mut sb = None;
     let mut eb = s.len();
     for (i, (byte, _)) in s.char_indices().enumerate() {
@@ -143,7 +143,7 @@ fn get_byte_range_from_char_range(s: &str, start: usize, end: usize) -> Range<us
     if let Some(sb) = sb { sb..eb } else { 0..0 }
 }
 
-fn char_idx_to_byte_idx(s: &str, idx: usize) -> Option<usize> {
+pub(crate) fn char_idx_to_byte_idx(s: &str, idx: usize) -> Option<usize> {
     s.char_indices().nth(idx).map(|x| x.0)
 }
 

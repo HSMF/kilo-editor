@@ -5,7 +5,7 @@ use tinyvec::{TinyVec, tiny_vec};
 
 use crate::{
     CursorDirection, Input,
-    buffer::Buffer,
+    buffer::{self, Buffer},
     ctrl_key,
     location::Location,
     motion::{self, Back, BigBack, BigWord, Motion, Word},
@@ -37,7 +37,10 @@ impl RegisterEntry {
 
 #[derive(Debug, PartialEq)]
 pub struct RegisterFile {
+    /// `"`
     unnamed: RegisterEntry,
+    /// `/`
+    search: RegisterEntry,
 }
 
 impl Mode {
@@ -51,6 +54,23 @@ impl Mode {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum CommandAction {
+    Command,
+    Search,
+    SearchPrevious,
+}
+
+impl CommandAction {
+    fn char(self) -> char {
+        match self {
+            CommandAction::Command => ':',
+            CommandAction::Search => '/',
+            CommandAction::SearchPrevious => '?',
+        }
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 enum ModeState {
     #[default]
@@ -58,14 +78,15 @@ enum ModeState {
     Insert,
     Visual,
     Command {
+        action: CommandAction,
         cmdline: String,
     },
 }
 
 impl ModeState {
-    fn expect_command(&mut self) -> &mut String {
+    fn expect_command(&mut self) -> (CommandAction, &mut String) {
         match self {
-            Self::Command { cmdline } => cmdline,
+            Self::Command { cmdline, action } => (*action, cmdline),
             _ => panic!(
                 "expected to have state 'COMMAND' but got {}",
                 Mode::from(&*self).str()
@@ -150,9 +171,9 @@ impl Vim {
         ret
     }
 
-    pub fn command_str(&self) -> Option<&str> {
+    pub fn command_str(&self) -> Option<(char, &str)> {
         match &self.state.mode {
-            ModeState::Command { cmdline } => Some(cmdline),
+            ModeState::Command { action, cmdline } => Some((action.char(), cmdline)),
             _ => None,
         }
     }
@@ -246,7 +267,7 @@ impl Vim {
                     fallback = self.fallback_insert(buf, ch)
                 )
             }
-            ModeState::Command { cmdline } => handle_mode!(
+            ModeState::Command { cmdline, .. } => handle_mode!(
                 self,
                 command_keymaps,
                 fallback = {
@@ -397,6 +418,27 @@ impl Vim {
         self.add_keymap(mode, [I::Char(':')], |mut a| {
             a.set_mode(ModeState::Command {
                 cmdline: String::new(),
+                action: CommandAction::Command,
+            })
+        });
+        self.add_keymap(mode, [I::Char('n')], |a| {
+            a.state
+                .execute_search(a.buf, &a.state.registers.get_register('/').value);
+        });
+        self.add_keymap(mode, [I::Char('N')], |a| {
+            a.state
+                .execute_search_previous(a.buf, &a.state.registers.get_register('/').value);
+        });
+        self.add_keymap(mode, [I::Char('/')], |mut a| {
+            a.set_mode(ModeState::Command {
+                cmdline: String::new(),
+                action: CommandAction::Search,
+            })
+        });
+        self.add_keymap(mode, [I::Char('?')], |mut a| {
+            a.set_mode(ModeState::Command {
+                cmdline: String::new(),
+                action: CommandAction::SearchPrevious,
             })
         });
         self.configure_arrow_keys(mode);
@@ -458,10 +500,12 @@ impl Vim {
         use Input as I;
 
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
-        self.add_keymap(mode, [I::Enter], |a| a.state.execute_cmd(a.buf));
+        self.add_keymap(mode, [I::Enter], |a| {
+            a.state.execute_cmd_mode_command(a.buf)
+        });
         self.add_keymap(mode, [I::Backspace], |mut a| {
             let s = a.state.mode.expect_command();
-            if s.pop().is_none() {
+            if s.1.pop().is_none() {
                 a.set_mode(ModeState::Normal);
             }
         });
@@ -510,9 +554,7 @@ impl VimState {
         }
     }
 
-    fn execute_cmd(&mut self, buf: &mut Buffer) {
-        let mut mode = std::mem::take(&mut self.mode);
-        let cmdline = mode.expect_command();
+    fn execute_cmd(&mut self, buf: &mut Buffer, cmdline: &str) {
         fn write(buf: &mut Buffer) {
             let Some(path) = buf.path() else {
                 return;
@@ -552,6 +594,99 @@ impl VimState {
         }
     }
 
+    fn execute_search(&self, buf: &mut Buffer, pattern: &str) {
+        if pattern.is_empty() {
+            return;
+        }
+        let pos = buf.position();
+
+        let start = buf.get_row(pos.line()).map(|line| {
+            (
+                Location::new(pos.line(), pos.col() + 1),
+                &line[buffer::char_idx_to_byte_idx(line, pos.col() + 1).unwrap_or(line.len())..],
+            )
+        });
+
+        let iter = start.into_iter().chain(
+            (pos.line() + 1..buf.num_lines())
+                .chain(0..=pos.line())
+                .flat_map(|lnum| buf.get_row(lnum).map(|line| (Location::new(lnum, 0), line))),
+        );
+
+        let first_match = iter.into_iter().find_map(|(loc, line)| {
+            let start = line.find(pattern)?;
+            let (char_idx, _) = line
+                .char_indices()
+                .enumerate()
+                .find(|(_, (i, _))| *i >= start)
+                .expect("char index exists");
+            Some(Location::new(loc.line(), loc.col() + char_idx))
+        });
+
+        if let Some(first_match) = first_match {
+            buf.set_position(first_match.line(), first_match.col());
+        } else {
+            warn!("{pattern:?} not found in buffer")
+        }
+    }
+
+    fn execute_search_previous(&self, buf: &mut Buffer, pattern: &str) {
+        if pattern.is_empty() {
+            return;
+        }
+        let pos = buf.position();
+
+        let start = buf
+            .get_row(pos.line())
+            .zip(pos.col().checked_sub(1))
+            .map(|(line, col)| {
+                (
+                    Location::new(pos.line(), 0),
+                    &line[..buffer::char_idx_to_byte_idx(line, col).unwrap_or(0)],
+                )
+            });
+
+        let iter = start.into_iter().chain(
+            (0..pos.line())
+                .rev()
+                .chain((pos.line()..buf.num_lines()).rev())
+                .flat_map(|lnum| buf.get_row(lnum).map(|line| (Location::new(lnum, 0), line))),
+        );
+
+        let iter = iter.inspect(|line| eprintln!("searching {line:?}"));
+        let first_match = iter.into_iter().find_map(|(loc, line)| {
+            let start = line.rfind(pattern)?;
+            let (char_idx, _) = line
+                .char_indices()
+                .enumerate()
+                .find(|(_, (i, _))| *i >= start)
+                .expect("char index exists");
+            Some(Location::new(loc.line(), loc.col() + char_idx))
+        });
+
+        if let Some(first_match) = first_match {
+            buf.set_position(first_match.line(), first_match.col());
+        } else {
+            warn!("{pattern:?} not found in buffer")
+        }
+    }
+
+    fn execute_cmd_mode_command(&mut self, buf: &mut Buffer) {
+        let mut mode = std::mem::take(&mut self.mode);
+        let (action, cmdline) = mode.expect_command();
+        match action {
+            CommandAction::Command => self.execute_cmd(buf, cmdline),
+            CommandAction::Search => {
+                self.registers.set_register('/', cmdline.to_string(), false);
+                self.execute_search(buf, cmdline);
+            }
+            CommandAction::SearchPrevious => {
+                self.registers.set_register('/', cmdline.to_string(), false);
+                self.execute_search_previous(buf, cmdline);
+            }
+        }
+    }
+
     fn set_mode(&mut self, mode: ModeState, buf: &mut Buffer) {
         match mode {
             ModeState::Normal | ModeState::Visual | ModeState::Command { .. } => {
@@ -565,19 +700,27 @@ impl VimState {
 
 impl RegisterFile {
     pub fn get_register(&self, name: char) -> &RegisterEntry {
-        assert_eq!(name, '"', "currently only unnamed (\") is supported");
-        &self.unnamed
+        match name {
+            '"' => &self.unnamed,
+            '/' => &self.search,
+            _ => panic!("currently only unnamed (\") is supported (got {name})"),
+        }
     }
 
     pub fn set_register(&mut self, name: char, s: String, linewise: bool) {
-        assert_eq!(name, '"', "currently only unnamed (\") is supported");
-        self.unnamed.value = s;
-        self.unnamed.yanked_linewise = linewise;
+        let reg = match name {
+            '"' => &mut self.unnamed,
+            '/' => &mut self.search,
+            _ => panic!("currently only unnamed (\") is supported (got {name})"),
+        };
+        reg.value = s;
+        reg.yanked_linewise = linewise;
     }
 
     fn new() -> Self {
         Self {
             unnamed: RegisterEntry::new(String::new()),
+            search: RegisterEntry::new(String::new()),
         }
     }
 }
@@ -795,9 +938,9 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("helloworld");
         feedkeys(&mut vim, &mut buf, ":f").no_break();
-        assert_eq!(vim.command_str(), Some("f"));
+        assert_eq!(vim.command_str(), Some((':', "f")));
         vim.handle_input(&mut buf, Input::Backspace).no_break();
-        assert_eq!(vim.command_str(), Some(""));
+        assert_eq!(vim.command_str(), Some((':', "")));
         assert_eq!(vim.mode(), Mode::Command);
         vim.handle_input(&mut buf, Input::Backspace).no_break();
         assert_eq!(vim.mode(), Mode::Normal);
@@ -924,5 +1067,40 @@ mod tests {
         feedkeys(&mut vim, &mut buf, "whr\n").no_break();
         assert_eq!(buf.save(), "hello\nworld\n");
         assert_eq!(vim.mode(), Mode::Normal);
+    }
+
+    #[test]
+    fn search() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("foo bar baz");
+        feedkeys(&mut vim, &mut buf, "/ \n").no_break();
+        assert_eq!(buf.position(), Location::new(0, 3));
+        feedkeys(&mut vim, &mut buf, "n").no_break();
+        assert_eq!(buf.position(), Location::new(0, 7));
+    }
+
+    #[test]
+    fn search_back() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("- [ ] `zz`");
+        buf.set_position(0, 7);
+        feedkeys(&mut vim, &mut buf, "? \n").no_break();
+        assert_eq!(buf.position(), Location::new(0, 5));
+    }
+
+    #[test]
+    fn search_back_multiline() {
+        let mut vim = Vim::new();
+        let (_f, mut buf) = buffer("- [ ] `aa`\n- [ ] `bb`\n- [ ] `cc`");
+        buf.set_position(2, 7);
+        feedkeys(&mut vim, &mut buf, "? \n").no_break();
+        assert_eq!(buf.position(), Location::new(2, 5));
+        feedkeys(&mut vim, &mut buf, "N").no_break();
+        assert_eq!(buf.position(), Location::new(2, 3));
+        feedkeys(&mut vim, &mut buf, "N").no_break();
+        assert_eq!(buf.position(), Location::new(2, 1));
+        eprintln!("===");
+        feedkeys(&mut vim, &mut buf, "N").no_break();
+        assert_eq!(buf.position(), Location::new(1, 5));
     }
 }
