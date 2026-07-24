@@ -1,4 +1,4 @@
-use std::{io::Write, ops::ControlFlow, os::fd::AsRawFd};
+use std::{env, fmt::Display, io::Write, ops::ControlFlow, os::fd::AsRawFd};
 
 use anyhow::anyhow;
 use log::LevelFilter;
@@ -123,6 +123,23 @@ pub enum Input {
     PageDown,
 }
 
+impl Display for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Input::Escape => write!(f, "<Esc>"),
+            Input::Char(ch) => write!(f, "{ch}"),
+            Input::Arrow(CursorDirection::Up) => write!(f, "<Up>"),
+            Input::Arrow(CursorDirection::Down) => write!(f, "<Down>"),
+            Input::Arrow(CursorDirection::Left) => write!(f, "<Left>"),
+            Input::Arrow(CursorDirection::Right) => write!(f, "<Right>"),
+            Input::Enter => write!(f, "<Enter>"),
+            Input::Backspace => write!(f, "<BS>"),
+            Input::PageUp => write!(f, "<PageUp>"),
+            Input::PageDown => write!(f, "<PageDown>"),
+        }
+    }
+}
+
 const fn ctrl_key(x: u8) -> u8 {
     x & 0x1f
 }
@@ -242,6 +259,12 @@ fn draw_rows(conf: &mut EditorConfig) {
 }
 
 fn main() -> anyhow::Result<()> {
+    if env::args().nth(1).as_deref() == Some("--print-supported-keymaps") {
+        let r = vim::VimKeymapReport::new();
+        println!("{}", r.0);
+        return Ok(());
+    }
+
     let logfile = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new(
             "[{level}] {file}:{line} {message}\n",

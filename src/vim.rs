@@ -150,149 +150,28 @@ enum LookupKeymap<'a> {
     NoMatch,
 }
 
-impl Vim {
-    pub fn bare() -> Self {
-        Self {
-            state: VimState::new(),
-            cur_input: tiny_vec!(),
-            normal_keymaps: Keymaps::new(),
-            insert_keymaps: Keymaps::new(),
-            visual_keymaps: Keymaps::new(),
-            command_keymaps: Keymaps::new(),
-        }
-    }
-
-    pub fn new() -> Self {
-        let mut ret = Self::bare();
-        ret.configure_normal_mode();
-        ret.configure_insert_mode();
-        ret.configure_command_mode();
-        ret.configure_visual_mode();
-        ret
-    }
-
-    pub fn command_str(&self) -> Option<(char, &str)> {
-        match &self.state.mode {
-            ModeState::Command { action, cmdline } => Some((action.char(), cmdline)),
-            _ => None,
-        }
-    }
-
-    fn handle_key<'a>(
-        key: impl IntoIterator<Item = &'a Input> + 'a,
-        keymaps: &'a Keymaps,
-    ) -> LookupKeymap<'a> {
-        match keymaps.get(key) {
-            Some(crate::trie::GetResult::Subtrie(..)) => LookupKeymap::Continue(()),
-            Some(crate::trie::GetResult::Value(v)) => LookupKeymap::Match(v),
-            None => LookupKeymap::NoMatch,
-        }
-    }
-
-    pub fn add_keymap<F: Fn(MapArgs) + 'static>(
+trait ConfigureKeymap {
+    fn add_keymap<F: Fn(MapArgs) + 'static>(
         &mut self,
         mode: Mode,
         mapping: impl IntoIterator<Item = Input>,
         action: F,
-    ) {
-        macro_rules! insert {
-            ($self:expr, $field:ident) => {{
-                $self.$field.insert(mapping, Box::new(action));
-            }};
-        }
-        match mode {
-            Mode::Normal => insert!(self, normal_keymaps),
-            Mode::Insert => insert!(self, insert_keymaps),
-            Mode::Visual => insert!(self, visual_keymaps),
-            Mode::Command => insert!(self, command_keymaps),
-        }
-    }
+    );
 
-    pub fn add_keymap_op_pending<F: Fn(MapArgs) + 'static>(
+    fn add_keymap_op_pending<F: Fn(MapArgs) + 'static>(
         &mut self,
         mode: Mode,
         mapping: impl IntoIterator<Item = Index<Input>>,
         action: F,
-    ) {
-        macro_rules! insert {
-            ($self:expr, $field:ident) => {{
-                $self.$field.insert_with_any(mapping, Box::new(action));
-            }};
-        }
-        match mode {
-            Mode::Normal => insert!(self, normal_keymaps),
-            Mode::Insert => insert!(self, insert_keymaps),
-            Mode::Visual => insert!(self, visual_keymaps),
-            Mode::Command => insert!(self, command_keymaps),
-        }
+    );
+
+    fn configure(&mut self) {
+        self.configure_normal_mode();
+        self.configure_insert_mode();
+        self.configure_command_mode();
+        self.configure_visual_mode();
     }
 
-    pub fn fallback_insert(&mut self, buf: &mut Buffer, ch: Input) {
-        match ch {
-            Input::Char(ch) => buf.insert_char(ch),
-            _ => warn!("unhandled char {ch:?}"),
-        }
-    }
-
-    pub fn handle_input(&mut self, buf: &mut Buffer, ch: Input) -> ControlFlow<()> {
-        macro_rules! handle_mode {
-            ($self:expr, $keymaps:ident) => {
-                handle_mode!($self, $keymaps, fallback = {})
-            };
-            ($self:expr, $keymaps:ident, fallback = $fallback:expr) => {{
-                $self.cur_input.push(ch);
-                match Self::handle_key($self.cur_input.iter(), &$self.$keymaps) {
-                    LookupKeymap::Match(fun) => {
-                        fun(MapArgs::new(buf, &mut self.state, &$self.cur_input));
-                        $self.cur_input.clear();
-                    }
-                    LookupKeymap::Continue(..) => {}
-                    LookupKeymap::NoMatch => {
-                        $fallback;
-                        $self.cur_input.clear();
-                    }
-                }
-            }};
-        }
-        match &mut self.state.mode {
-            ModeState::Normal => handle_mode!(
-                self,
-                normal_keymaps,
-                fallback = { debug!("unknown input {:?}", self.cur_input) }
-            ),
-            ModeState::Insert => {
-                handle_mode!(
-                    self,
-                    insert_keymaps,
-                    fallback = self.fallback_insert(buf, ch)
-                )
-            }
-            ModeState::Command { cmdline, .. } => handle_mode!(
-                self,
-                command_keymaps,
-                fallback = {
-                    match ch {
-                        Input::Char(ch) => cmdline.push(ch),
-                        _ => todo!(),
-                    }
-                }
-            ),
-
-            ModeState::Visual => handle_mode!(self, visual_keymaps),
-        }
-        if self.state.quit {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
-        }
-    }
-
-    pub fn mode(&self) -> Mode {
-        (&self.state.mode).into()
-    }
-}
-
-impl Vim {
     fn configure_normal_mode(&mut self) {
         let mode = Mode::Normal;
         use CursorDirection as C;
@@ -537,6 +416,184 @@ impl Vim {
         self.add_keymap(mode, [I::Char('j')], |a| a.buf.move_cursor(C::Down));
         self.add_keymap(mode, [I::Char('k')], |a| a.buf.move_cursor(C::Up));
         self.add_keymap(mode, [I::Char('l')], |a| a.buf.move_cursor(C::Right));
+    }
+}
+
+impl Vim {
+    pub fn bare() -> Self {
+        Self {
+            state: VimState::new(),
+            cur_input: tiny_vec!(),
+            normal_keymaps: Keymaps::new(),
+            insert_keymaps: Keymaps::new(),
+            visual_keymaps: Keymaps::new(),
+            command_keymaps: Keymaps::new(),
+        }
+    }
+
+    pub fn new() -> Self {
+        let mut ret = Self::bare();
+        ret.configure();
+        ret
+    }
+
+    pub fn command_str(&self) -> Option<(char, &str)> {
+        match &self.state.mode {
+            ModeState::Command { action, cmdline } => Some((action.char(), cmdline)),
+            _ => None,
+        }
+    }
+
+    fn handle_key<'a>(
+        key: impl IntoIterator<Item = &'a Input> + 'a,
+        keymaps: &'a Keymaps,
+    ) -> LookupKeymap<'a> {
+        match keymaps.get(key) {
+            Some(crate::trie::GetResult::Subtrie(..)) => LookupKeymap::Continue(()),
+            Some(crate::trie::GetResult::Value(v)) => LookupKeymap::Match(v),
+            None => LookupKeymap::NoMatch,
+        }
+    }
+
+    pub fn fallback_insert(&mut self, buf: &mut Buffer, ch: Input) {
+        match ch {
+            Input::Char(ch) => buf.insert_char(ch),
+            _ => warn!("unhandled char {ch:?}"),
+        }
+    }
+
+    pub fn handle_input(&mut self, buf: &mut Buffer, ch: Input) -> ControlFlow<()> {
+        macro_rules! handle_mode {
+            ($self:expr, $keymaps:ident) => {
+                handle_mode!($self, $keymaps, fallback = {})
+            };
+            ($self:expr, $keymaps:ident, fallback = $fallback:expr) => {{
+                $self.cur_input.push(ch);
+                match Self::handle_key($self.cur_input.iter(), &$self.$keymaps) {
+                    LookupKeymap::Match(fun) => {
+                        fun(MapArgs::new(buf, &mut self.state, &$self.cur_input));
+                        $self.cur_input.clear();
+                    }
+                    LookupKeymap::Continue(..) => {}
+                    LookupKeymap::NoMatch => {
+                        $fallback;
+                        $self.cur_input.clear();
+                    }
+                }
+            }};
+        }
+        match &mut self.state.mode {
+            ModeState::Normal => handle_mode!(
+                self,
+                normal_keymaps,
+                fallback = { debug!("unknown input {:?}", self.cur_input) }
+            ),
+            ModeState::Insert => {
+                handle_mode!(
+                    self,
+                    insert_keymaps,
+                    fallback = self.fallback_insert(buf, ch)
+                )
+            }
+            ModeState::Command { cmdline, .. } => handle_mode!(
+                self,
+                command_keymaps,
+                fallback = {
+                    match ch {
+                        Input::Char(ch) => cmdline.push(ch),
+                        _ => todo!(),
+                    }
+                }
+            ),
+
+            ModeState::Visual => handle_mode!(self, visual_keymaps),
+        }
+        if self.state.quit {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    pub fn mode(&self) -> Mode {
+        (&self.state.mode).into()
+    }
+}
+
+impl ConfigureKeymap for Vim {
+    fn add_keymap<F: Fn(MapArgs) + 'static>(
+        &mut self,
+        mode: Mode,
+        mapping: impl IntoIterator<Item = Input>,
+        action: F,
+    ) {
+        macro_rules! insert {
+            ($self:expr, $field:ident) => {{
+                $self.$field.insert(mapping, Box::new(action));
+            }};
+        }
+        match mode {
+            Mode::Normal => insert!(self, normal_keymaps),
+            Mode::Insert => insert!(self, insert_keymaps),
+            Mode::Visual => insert!(self, visual_keymaps),
+            Mode::Command => insert!(self, command_keymaps),
+        }
+    }
+
+    fn add_keymap_op_pending<F: Fn(MapArgs) + 'static>(
+        &mut self,
+        mode: Mode,
+        mapping: impl IntoIterator<Item = Index<Input>>,
+        action: F,
+    ) {
+        macro_rules! insert {
+            ($self:expr, $field:ident) => {{
+                $self.$field.insert_with_any(mapping, Box::new(action));
+            }};
+        }
+        match mode {
+            Mode::Normal => insert!(self, normal_keymaps),
+            Mode::Insert => insert!(self, insert_keymaps),
+            Mode::Visual => insert!(self, visual_keymaps),
+            Mode::Command => insert!(self, command_keymaps),
+        }
+    }
+}
+
+pub struct VimKeymapReport(pub String);
+impl VimKeymapReport {
+    pub fn new() -> Self {
+        let mut ret = Self(String::new());
+        ret.configure();
+        ret
+    }
+}
+impl ConfigureKeymap for VimKeymapReport {
+    fn add_keymap<F: Fn(MapArgs) + 'static>(
+        &mut self,
+        mode: Mode,
+        mapping: impl IntoIterator<Item = Input>,
+        action: F,
+    ) {
+        self.add_keymap_op_pending(mode, mapping.into_iter().map(Index::Index), action);
+    }
+
+    fn add_keymap_op_pending<F: Fn(MapArgs) + 'static>(
+        &mut self,
+        mode: Mode,
+        mapping: impl IntoIterator<Item = Index<Input>>,
+        _action: F,
+    ) {
+        use std::fmt::Write;
+        let f = &mut self.0;
+        write!(f, "{} ", mode.str()).unwrap();
+        for map in mapping {
+            match map {
+                Index::Any => write!(f, "<Any>").unwrap(),
+                Index::Index(ch) => write!(f, "{ch}").unwrap(),
+            }
+        }
+        writeln!(f).unwrap();
     }
 }
 
