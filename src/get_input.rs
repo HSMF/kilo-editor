@@ -166,7 +166,7 @@ where
         }
 
         match self.enc.push(ch) {
-            Ok(Some(ch)) if ch.is_ascii_control() => Some(Input::Control(ch as u8)),
+            Ok(Some(ch)) if ch.is_ascii_control() && ch != '\t' => Some(Input::Control(ch as u8)),
             Ok(Some(ch)) => Some(Input::Char(ch)),
             Ok(None) => None,
             Err(_) => {
