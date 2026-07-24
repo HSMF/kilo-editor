@@ -4,7 +4,7 @@ use tinyvec::{ArrayVec, array_vec};
 
 use crate::{CursorDirection, location::Location};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct Row {
     content: String,
     render: String,
@@ -431,6 +431,7 @@ impl Buffer {
     /// lines inclusive, columns exclusive
     // TODO: do we want to return the deleted text?
     pub fn delete_range(&mut self, start: Location, end: Location) {
+        self.dirty = true;
         assert!(start <= end);
         let range = if start.line() == end.line() {
             let row = &mut self.row[start.line()];
@@ -462,12 +463,68 @@ impl Buffer {
     }
 
     /// lines inclusive, columns exclusive
-    pub fn set_range<I, S>(&mut self, start: Location, end: Location, _replacement: I)
+    pub fn set_range<I, S>(&mut self, start: Location, end: Location, replacement: I)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        todo!("set range {start:?} {end:?}")
+        self.dirty = true;
+        let mut replacement = replacement.into_iter().map(Into::into);
+        // what nasty logic
+        if start.line() == end.line() {
+            let row = &mut self.row[start.line()];
+            let first = replacement.next().unwrap_or_default();
+            let second = replacement.next();
+
+            match second {
+                None => {
+                    // same line
+                    let row = std::mem::take(row);
+                    let mut content = row.content;
+                    content.drain(get_byte_range_from_char_range(
+                        &content,
+                        start.col(),
+                        end.col(),
+                    ));
+                    let idx = char_idx_to_byte_idx(&content, start.col()).unwrap_or(content.len());
+                    let content = content.into_bytes();
+
+                    let content = insert_in_middle(content, idx, first.bytes());
+                    let content = String::from_utf8(content).expect("valid utf8");
+
+                    self.row[start.line()] = Row::new(content);
+                }
+                Some(second) => {
+                    // split into lines
+                    let mut lines: Vec<_> = std::iter::once(second).chain(replacement).collect();
+                    let mut last = lines.pop().expect("not empty");
+
+                    let start_idx = char_idx_to_byte_idx(&row.content, start.col())
+                        .unwrap_or(row.content_len());
+                    let end_idx =
+                        char_idx_to_byte_idx(&row.content, end.col()).unwrap_or(row.content_len());
+
+                    last.extend(row.content.drain(end_idx..));
+
+                    row.content.truncate(start_idx);
+                    row.content.push_str(&first);
+                    row.recompute_rendered();
+
+                    self.row = insert_in_middle(
+                        std::mem::take(&mut self.row),
+                        start.line() + 1,
+                        lines.into_iter().chain(std::iter::once(last)).map(Row::new),
+                    );
+                }
+            }
+        } else {
+            todo!("set range {start:?} {end:?}")
+        }
+
+        dbg!(start, self.position());
+        if start <= self.position() && self.position() <= end {
+            self.set_position(start.line(), start.col());
+        }
     }
 
     /// insert `lines` before `start`
@@ -476,27 +533,30 @@ impl Buffer {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let lines = lines.into_iter().map(Into::into).map(Row::new);
         if start > self.row.len() {
-            self.row
-                .extend(lines.into_iter().map(Into::into).map(Row::new));
+            self.row.extend(lines);
             return;
         }
-        let lines = lines.into_iter();
-        let mut row = Vec::with_capacity(self.row.len() + lines.size_hint().0);
-
-        for r in self.row.drain(..start) {
-            row.push(r);
-        }
-
-        for l in lines {
-            row.push(Row::new(l.into()));
-        }
-
-        std::mem::swap(&mut self.row, &mut row);
-        for r in row {
-            self.row.push(r);
-        }
+        self.row = insert_in_middle(std::mem::take(&mut self.row), start, lines);
     }
+}
+
+fn insert_in_middle<T>(mut vec: Vec<T>, idx: usize, middle: impl IntoIterator<Item = T>) -> Vec<T> {
+    let iter = middle.into_iter();
+    let mut ret = Vec::with_capacity(vec.len() + iter.size_hint().0);
+
+    for r in vec.drain(..idx) {
+        ret.push(r);
+    }
+
+    for l in iter {
+        ret.push(l);
+    }
+
+    ret.extend(vec);
+
+    ret
 }
 
 pub struct RangeIter<'a> {
@@ -964,6 +1024,30 @@ mod tests {
         };
     }
 
+    macro_rules! set_range_tests {
+        ($(
+            $name:ident: $buf:literal @ $cur_before:expr, $start:expr, $end:expr, $lines:expr, $expected:literal @ $cur_after:expr
+        )*) => {
+            $(
+
+                #[test]
+                fn $name() {
+                    let mut buffer = new_buf($buf);
+                    let before = $cur_before;
+                    buffer.set_position(before.0, before.1);
+                    buffer.set_range($start.into(), $end.into(), $lines);
+                    assert_eq!(
+                        buffer.save(),
+                        $expected
+                    );
+                    assert_eq!(buffer.position(), $cur_after.into());
+
+                }
+
+            )*
+        };
+    }
+
     get_range_tests! {
         get_full_range: "hello\n\nworld", (0,0), (2,5), ["hello", "", "world"]
         get_almost_full_range: "hello\n\nworld", (0,0), (2,4), ["hello", "", "worl"]
@@ -981,8 +1065,18 @@ mod tests {
         delete_with_cursor_inside_range_multiline: "foo\nbar\nbaz" @ (1, 1), (0, 1), (2, 1), "faz\n", (0, 1)
     }
 
+    const EMPTY: [&str; 0] = [];
+
     set_lines_tests! {
-        set_lines_empty: "hello world", 0, Vec::<&str>::new(), "hello world\n"
+        set_lines_empty: "hello world", 0, EMPTY, "hello world\n"
         set_lines_empty_buf: "", 1, ["hello world"], "hello world\n"
+    }
+
+    set_range_tests! {
+        set_range_delete: "hello world" @ (0, 3), (0, 1), (0, 5), EMPTY, "h world\n" @ (0, 1)
+        set_range_insert_one_line: "hello world" @ (0, 5), (0, 5), (0, 5), [","], "hello, world\n" @ (0, 5)
+        set_range_insert_two_lines: "hello world" @ (0, 5), (0, 5), (0, 6), [",", "..."], "hello,\n...world\n" @ (0, 5)
+        set_range_insert_three_lines: "hello world" @ (0, 5), (0, 5), (0, 6), [",", "to", "this "], "hello,\nto\nthis world\n" @ (0, 5)
+        // TODO: multi line deletion range
     }
 }

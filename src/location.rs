@@ -47,6 +47,16 @@ impl std::fmt::Debug for Location {
     }
 }
 
+impl std::ops::Add<(usize, usize)> for Location {
+    type Output = Self;
+
+    fn add(mut self, rhs: (usize, usize)) -> Self::Output {
+        self.line += rhs.0;
+        self.col += rhs.1;
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -54,5 +64,11 @@ mod tests {
     fn cmp() {
         assert!(Location::new(0, 0) < Location::new(0, 1));
         assert!(Location::new(0, 10) < Location::new(1, 0));
+    }
+
+    #[test]
+    fn add() {
+        assert_eq!(Location::new(0, 5) + (0, 2), Location::new(0, 7));
+        assert_eq!(Location::new(1, 5) + (4, 2), Location::new(5, 7));
     }
 }

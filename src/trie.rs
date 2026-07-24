@@ -19,18 +19,42 @@ enum TrieNodeSlot<K: Default, V, const N: usize> {
     Next(Box<TrieNode<K, V, N>>),
 }
 
+type TableItem<K, V, const N: usize> = (Index<K>, TrieNodeSlot<K, V, N>);
 #[derive(Debug)]
 struct TrieNode<K: Default, V, const N: usize> {
-    table: TinyVec<[(K, TrieNodeSlot<K, V, N>); N]>,
+    table: TinyVec<[TableItem<K, V, N>; N]>,
+}
+
+#[derive(Debug, PartialEq, Eq, Default)]
+pub enum Index<K> {
+    #[default]
+    Any,
+    Index(K),
+}
+
+impl<K> Index<K> {
+    fn as_ref(&self) -> Index<&K> {
+        match self {
+            Index::Any => Index::Any,
+            Index::Index(k) => Index::Index(k),
+        }
+    }
 }
 
 impl<K: Default + Eq, V, const N: usize> TrieNode<K, V, N> {
-    fn index_of_key(&self, key: &K) -> Option<usize> {
+    fn index_of_key(&self, key: Index<&K>) -> Option<usize> {
         self.table
             .iter()
             .enumerate()
-            .find(|(_, (k, _))| key == k)
+            .find(|(_, (k, _))| key == k.as_ref())
             .map(|(i, _)| i)
+            .or_else(|| {
+                self.table
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (k, _))| k == &Index::Any)
+                    .map(|(i, _)| i)
+            })
     }
 
     pub fn get<'a>(
@@ -41,7 +65,7 @@ impl<K: Default + Eq, V, const N: usize> TrieNode<K, V, N> {
         let mut value = None;
         for k in key {
             let current = cur?;
-            let idx = current.index_of_key(k)?;
+            let idx = current.index_of_key(Index::Index(k))?;
             match &current.table[idx].1 {
                 TrieNodeSlot::Nothing => unreachable!("never actively constructed"),
                 TrieNodeSlot::Value(v) => {
@@ -86,13 +110,20 @@ impl<K: Default + Eq, V, const N: usize> Trie<K, V, N> {
      * `key` must contain at least one item
      */
     pub fn insert(&mut self, key: impl IntoIterator<Item = K>, v: V) -> Option<V> {
+        self.insert_with_any(key.into_iter().map(|k| Index::Index(k)), v)
+    }
+
+    /**
+     * `key` must contain at least one item
+     */
+    pub fn insert_with_any(&mut self, key: impl IntoIterator<Item = Index<K>>, v: V) -> Option<V> {
         let mut cur = &mut self.root;
         let mut key = key.into_iter().peekable();
         assert!(key.peek().is_some());
         let mut last = None;
         while let Some(k) = key.next() {
             if key.peek().is_some() {
-                let (_, next) = if let Some(idx) = cur.index_of_key(&k) {
+                let (_, next) = if let Some(idx) = cur.index_of_key(k.as_ref()) {
                     &mut cur.table[idx]
                 } else {
                     cur.table.push((
@@ -110,7 +141,7 @@ impl<K: Default + Eq, V, const N: usize> Trie<K, V, N> {
             }
         }
         let last = last.expect("at least one key");
-        if let Some(idx) = cur.index_of_key(&last) {
+        if let Some(idx) = cur.index_of_key(last.as_ref()) {
             let mut tmp = TrieNodeSlot::Value(v);
             std::mem::swap(&mut tmp, &mut cur.table[idx].1);
             match tmp {
@@ -170,5 +201,44 @@ mod tests {
         let mut x = Trie::default();
         x.insert("foo".chars(), 1);
         assert_eq!(x.insert("foo".chars(), 2), Some(1));
+    }
+
+    #[test]
+    fn match_any() {
+        let mut x = Trie::default();
+        x.insert("fo".chars(), 1);
+        x.insert_with_any([Index::Index('f'), Index::Any], 2);
+
+        assert!(matches!(
+            x.get(['f', 'o'].iter()),
+            Some(GetResult::Value(1))
+        ));
+
+        assert!(matches!(
+            x.get(['f', 'a'].iter()),
+            Some(GetResult::Value(2))
+        ));
+
+        assert!(matches!(
+            x.get(['f', 'i'].iter()),
+            Some(GetResult::Value(2))
+        ));
+    }
+
+    #[test]
+    fn match_any_in_middle() {
+        let mut x = Trie::default();
+        x.insert("fit".chars(), 1);
+        x.insert_with_any([Index::Index('f'), Index::Any, Index::Index('t')], 2);
+
+        assert!(matches!(
+            x.get(['f', 'i', 't'].iter()),
+            Some(GetResult::Value(1))
+        ));
+
+        assert!(matches!(
+            x.get(['f', 'a', 't'].iter()),
+            Some(GetResult::Value(2))
+        ));
     }
 }
