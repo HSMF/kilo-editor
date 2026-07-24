@@ -177,12 +177,12 @@ trait ConfigureKeymap {
         use CursorDirection as C;
         use Input as I;
         self.add_keymap(mode, [I::Escape], |mut a| a.set_mode(ModeState::Normal));
-        self.add_keymap(mode, [I::Char(ctrl_key(b'u') as char)], |a| {
+        self.add_keymap(mode, [ctrl_key(b'u')], |a| {
             for _ in 0..12 {
                 a.buf.move_cursor(C::Up)
             }
         });
-        self.add_keymap(mode, [I::Char(ctrl_key(b'd') as char)], |a| {
+        self.add_keymap(mode, [ctrl_key(b'd')], |a| {
             for _ in 0..12 {
                 a.buf.move_cursor(C::Down)
             }
@@ -252,7 +252,12 @@ trait ConfigureKeymap {
 
                     a.buf.set_range(loc, loc + (0, 1), ["", ""]);
                 }
-                I::Arrow(..) | I::Escape | I::Backspace | I::PageUp | I::PageDown => {}
+                I::Control(_)
+                | I::Arrow(..)
+                | I::Escape
+                | I::Backspace
+                | I::PageUp
+                | I::PageDown => {}
             }
         });
 
@@ -1027,13 +1032,11 @@ mod tests {
         let mut vim = Vim::new();
         let (_f, mut buf) = buffer("hello\nworld\nfoo");
         let before = buf.position().line();
-        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'd') as char))
-            .no_break();
+        vim.handle_input(&mut buf, ctrl_key(b'd')).no_break();
         let after = buf.position().line();
         assert!(before < after);
 
-        vim.handle_input(&mut buf, Input::Char(ctrl_key(b'u') as char))
-            .no_break();
+        vim.handle_input(&mut buf, ctrl_key(b'u')).no_break();
         let last = buf.position().line();
         assert!(after > last);
     }

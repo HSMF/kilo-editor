@@ -78,7 +78,6 @@ impl Utf8Encoder {
     }
 
     fn push(&mut self, ch: u8) -> Result<Option<char>, Utf8Error> {
-        eprintln!("{ch:02x} {ch:08b}");
         match ch {
             0..=0b0111_1111 => {
                 if self.expected_len == 0 {
@@ -167,6 +166,7 @@ where
         }
 
         match self.enc.push(ch) {
+            Ok(Some(ch)) if ch.is_ascii_control() => Some(Input::Control(ch as u8)),
             Ok(Some(ch)) => Some(Input::Char(ch)),
             Ok(None) => None,
             Err(_) => {
@@ -356,7 +356,7 @@ mod tests {
         let mut gc = GetChar::new(i);
 
         let x = poll(&mut gc, 20);
-        assert_eq!(x, vec![I::Char('\x1b'), I::Char('['), I::Char(',')]);
+        assert_eq!(x, vec![I::Control(0x1b), I::Char('['), I::Char(',')]);
     }
 
     #[test]
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(
             x,
             vec![
-                I::Char('\x1b'),
+                I::Control(0x1b),
                 I::Char('['),
                 I::Char(','),
                 I::Char('1'),

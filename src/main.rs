@@ -121,6 +121,7 @@ pub enum Input {
     Backspace,
     PageUp,
     PageDown,
+    Control(u8),
 }
 
 impl Display for Input {
@@ -136,12 +137,16 @@ impl Display for Input {
             Input::Backspace => write!(f, "<BS>"),
             Input::PageUp => write!(f, "<PageUp>"),
             Input::PageDown => write!(f, "<PageDown>"),
+            Input::Control(c) => {
+                let ch = *c | 0b0110_0000;
+                write!(f, "<C-{}>", ch as char)
+            }
         }
     }
 }
 
-const fn ctrl_key(x: u8) -> u8 {
-    x & 0x1f
+const fn ctrl_key(x: u8) -> Input {
+    Input::Control(x & 0x1f)
 }
 
 fn enter_raw_mode() -> Termios {
